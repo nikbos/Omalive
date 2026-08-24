@@ -1,0 +1,9 @@
+{
+  "name": "omalive",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Unit tests for the OmaLive omarchy plugin model",
+  "scripts": {
+    "test": "node --test"
+  }
+}

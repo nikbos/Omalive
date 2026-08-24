@@ -37,6 +37,10 @@ omarchy plugin add <repo-url> --enable
 omarchy restart shell
 ```
 
+> **Locked?** The installer and `omarchy plugin add/update` refuse or should be
+> avoided while the session is locked: writing into the plugin folder hot-reloads
+> the shell and tears down the active lock screen. Unlock first.
+
 ## Quick start
 
 ```bash

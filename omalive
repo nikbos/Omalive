@@ -1,0 +1,271 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# omalive — command-line control for the OmaLive aerial screensaver + live
+# wallpaper plugin on Omarchy 4 (Quickshell).
+#
+# The interactive UI lives in the shell: a bar widget + dropdown panel (click
+# the film icon in the bar). This CLI is the scriptable path — for keybinds,
+# SSH and automation. It is a thin wrapper over the shell IPC:
+#   omarchy-shell omalive <fn> [args]
+#
+# Commands:
+#   status  (default)     Print current state (per monitor).
+#   screens               List each monitor and its state.
+#   play <file> [screen]  Set + start a video, everywhere or on one monitor.
+#   off <screen>          Blank one monitor, leaving the others playing.
+#   clear <screen|all>    Drop a monitor's own clip; follow the default.
+#   freeze                Decelerate to a stop; the frozen frame is the wallpaper.
+#   flourish              Play from the frozen frame, then glide to a stop.
+#   stop                  Stop; the static wallpaper shows through.
+#   toggle                Flip on/off (handy for a keybind).
+#   pause | resume        Pause/resume playback.
+#   screensaver <cmd>     on|off (enable), start (show now), stop (dismiss),
+#                         status.
+#   live <on|off>         Keep the wallpaper drifting instead of freezing.
+#   transition <seconds>  Length of the freeze transition (1-10).
+#   autopause <on|off>    Pause under fullscreen windows.
+#   shuffle <on|off>      Rotate clips while the screensaver is up.
+#   fetch [dest]          Download aerial-style clips into the video folder.
+#
+# State (owned by the plugin): ~/.local/state/omalive/state.json
+# Log: ~/.cache/omalive.log
+# ==============================================================================
+
+set -euo pipefail
+
+APP_NAME="OmaLive"
+IPC_TARGET="omalive"
+LOG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}"
+LOG_FILE="$LOG_DIR/omalive.log"
+LOG_MAX_BYTES=$(( 256 * 1024 ))
+mkdir -p "$LOG_DIR"
+
+if [ -L "$LOG_FILE" ] || { [ -e "$LOG_FILE" ] && [ ! -f "$LOG_FILE" ]; }; then
+  LOG_FILE=/dev/null
+fi
+
+rotate_log() {
+  local size
+  [ -f "$LOG_FILE" ] || return 0
+  size=$(stat -c %s "$LOG_FILE" 2>/dev/null) || return 0
+  [ "$size" -gt "$LOG_MAX_BYTES" ] || return 0
+  mv -f "$LOG_FILE" "$LOG_FILE.1" 2>/dev/null || : > "$LOG_FILE"
+}
+rotate_log
+
+TXT_ERR_NO_SHELL="omarchy-shell (Quickshell) isn't running. Start your Omarchy session first."
+TXT_ERR_NO_PLUGIN="The OmaLive plugin isn't loaded. Enable it: omarchy plugin enable omalive"
+TXT_ERR_NO_OMARCHY="omarchy-shell was not found on PATH. OmaLive requires Omarchy 4+."
+
+err() { echo "omalive: $*" >&2; }
+
+require_cmd() {
+  local c
+  for c in "$@"; do command -v "$c" >/dev/null 2>&1 || { err "'$c' is not installed."; exit 1; }; done
+}
+
+ipc() { omarchy-shell "$IPC_TARGET" "$@" 2>>"$LOG_FILE"; }
+
+require_plugin() {
+  command -v omarchy-shell >/dev/null 2>&1 || { err "$TXT_ERR_NO_OMARCHY"; exit 1; }
+  local probe
+  probe="$(omarchy-shell "$IPC_TARGET" status 2>&1 >/dev/null)" && return 0
+  case "$probe" in
+    *"Target not found"*|*"Function not found"*) err "$TXT_ERR_NO_PLUGIN" ;;
+    *) err "$TXT_ERR_NO_SHELL" ;;
+  esac
+  exit 1
+}
+
+state_word() {
+  local j enabled sa frozen live paused nscreens assigned
+  j="$(cat)"
+  enabled="$(jq -r '.enabled // false' <<<"$j")"
+  sa="$(jq -r '.screensaverActive // false' <<<"$j")"
+  frozen="$(jq -r '.wallpaperFrozen // false' <<<"$j")"
+  live="$(jq -r '.liveWallpaper // false' <<<"$j")"
+  paused="$(jq -r '.manualPaused // false' <<<"$j")"
+  if [ "$enabled" != "true" ]; then echo stopped; return; fi
+  if [ "$sa" = "true" ]; then echo screensaver; return; fi
+  if [ "$paused" = "true" ]; then echo paused; return; fi
+  if [ "$frozen" = "true" ]; then echo frozen; return; fi
+  if [ "$live" = "true" ]; then echo live; return; fi
+  nscreens="$(jq -r '(.screens // []) | length' <<<"$j")"
+  assigned="$(jq -r '[(.screens // [])[] | select((.video // "") != "")] | length' <<<"$j")"
+  if [ "$assigned" -eq 0 ]; then echo "no video set"; return; fi
+  echo playing
+}
+
+screens_table() {
+  jq -r '(.screens // [])[] |
+    (.name)
+    + "\t"
+    + (if (.video // "") == "" then "off"
+       elif (.fileExists // false) | not then "file missing"
+       else (.state // "off") end)
+    + "\t"
+    + (if (.video // "") == "" then "-" else (.video | split("/") | last) end)
+    + (if (.source // "") == "screen" then "" else "  (default)" end)'
+}
+
+cmd_status() {
+  require_cmd jq
+  require_plugin
+  local j; j="$(ipc status 2>/dev/null || echo '{}')"
+  local video transition nscreens noverrides live sa
+  video="$(jq -r '.videoPath // ""' <<<"$j")"
+  transition="$(jq -r '.transitionSeconds // 2' <<<"$j")"
+  nscreens="$(jq -r '(.screens // []) | length' <<<"$j")"
+  noverrides="$(jq -r '(.screenVideos // {}) | length' <<<"$j")"
+  live="$(jq -r '.liveWallpaper // false' <<<"$j")"
+  sa="$(jq -r '.screensaverEnabled // true' <<<"$j")"
+  printf 'status:      %s\n' "$(state_word <<<"$j")"
+  printf 'video:       %s\n' "${video:-(none)}"
+  printf 'transition:  %ss\n' "$transition"
+  printf 'live:        %s\n' "$([ "$live" = "true" ] && echo on || echo off)"
+  printf 'screensaver: %s\n' "$([ "$sa" = "true" ] && echo on || echo off)"
+  if [ "${nscreens:-0}" -gt 1 ] || [ "${noverrides:-0}" -gt 0 ]; then
+    printf 'screens:\n'
+    screens_table <<<"$j" | while IFS=$'\t' read -r name state clip; do
+      printf '  %-12s %-12s %s\n' "$name" "$state" "$clip"
+    done
+  fi
+}
+
+cmd_screens() {
+  require_cmd jq
+  require_plugin
+  local j; j="$(ipc status 2>/dev/null || echo '{}')"
+  screens_table <<<"$j" | while IFS=$'\t' read -r name state clip; do
+    printf '%-12s %-12s %s\n' "$name" "$state" "$clip"
+  done
+}
+
+cmd_play() {
+  require_plugin
+  local f="${1:-}" s="${2:-}"
+  [ -n "$f" ] || { err "usage: omalive play <file> [screen]"; exit 1; }
+  [ -f "$f" ] || { err "file not found: $f"; exit 1; }
+  local p; p="$(readlink -f "$f")"
+  if [ -n "$s" ] && [ "$s" != "all" ]; then
+    ipc playOn "$s" "$p" >/dev/null
+  else
+    ipc playAll "$p" >/dev/null
+  fi
+}
+
+cmd_off() {
+  require_plugin
+  local s="${1:-}"
+  [ -n "$s" ] || { err "usage: omalive off <monitor-name>"; exit 1; }
+  [ "$s" != "all" ] || { err "use 'omalive stop' to blank every screen"; exit 1; }
+  ipc playOn "$s" "" >/dev/null
+}
+
+cmd_clear() {
+  require_plugin
+  local s="${1:-}"
+  [ -n "$s" ] || { err "usage: omalive clear <monitor-name|all>"; exit 1; }
+  ipc clearScreen "$s" >/dev/null
+}
+
+cmd_screensaver() {
+  require_plugin
+  case "${1:-status}" in
+    on)        ipc screensaver forceon  >/dev/null ;;
+    off)       ipc screensaver forceoff >/dev/null ;;
+    start|show) ipc screensaver start   >/dev/null ;;
+    stop|dismiss) ipc screensaver stop  >/dev/null ;;
+    status|"") cmd_status ;;
+    *) err "usage: omalive screensaver <on|off|start|stop|status>"; exit 1 ;;
+  esac
+}
+
+cmd_bool() {
+  require_plugin
+  local fn="$1" val="$2"
+  case "$val" in
+    on|true)   ipc "$fn" true  >/dev/null ;;
+    off|false) ipc "$fn" false >/dev/null ;;
+    *) err "usage: omalive $fn <on|off>"; exit 1 ;;
+  esac
+}
+
+cmd_fetch() {
+  local dest="${1:-}"
+  local script
+  script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fetch.sh"
+  [ -f "$script" ] || script="$(command -v omalive-fetch 2>/dev/null || true)"
+  [ -n "$script" ] && [ -f "$script" ] || { err "fetch.sh / omalive-fetch not found alongside this script."; exit 1; }
+  exec "$script" "${dest:-}"
+}
+
+cmd_optimize() {
+  local dest="${1:-}"
+  if [ -z "$dest" ]; then
+    dest="$(omarchy-shell "$IPC_TARGET" status 2>/dev/null | jq -r '.videoDir // ""' 2>/dev/null || true)"
+    dest="${dest/#\~/$HOME}"
+    [ -n "$dest" ] || dest="$HOME/Videos/Aerial"
+  fi
+  local script
+  script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/optimize.sh"
+  [ -f "$script" ] || script="$(command -v omalive-optimize 2>/dev/null || true)"
+  [ -n "$script" ] && [ -f "$script" ] || { err "optimize.sh / omalive-optimize not found alongside this script."; exit 1; }
+  exec "$script" "$dest"
+}
+
+case "${1:-status}" in
+  status|"")  cmd_status ;;
+  screens)    cmd_screens ;;
+  play)       shift; cmd_play "${1:-}" "${2:-}" ;;
+  off)        shift; cmd_off "${1:-}" ;;
+  clear)      shift; cmd_clear "${1:-}" ;;
+  freeze)     require_plugin; ipc freeze  >/dev/null ;;
+  flourish)   require_plugin; ipc flourish >/dev/null ;;
+  stop)       require_plugin; ipc stop   >/dev/null ;;
+  toggle)     require_plugin; ipc toggle >/dev/null ;;
+  pause)      require_plugin; ipc pause  >/dev/null ;;
+  resume)     require_plugin; ipc resume >/dev/null ;;
+  screensaver) shift; cmd_screensaver "${1:-}" ;;
+  live)       shift; cmd_bool setLiveWallpaper "${1:-}" ;;
+  transition) require_plugin; ipc setTransitionSeconds "${2:-}" >/dev/null ;;
+  autopause)  shift; cmd_bool setPauseOnFullscreen "${1:-}" ;;
+  shuffle)    shift; cmd_bool setShuffle "${1:-}" ;;
+  fetch)      shift; cmd_fetch "${1:-}" ;;
+  optimize)   shift; cmd_optimize "${1:-}" ;;
+  -h|--help)
+    cat <<USAGE
+$APP_NAME — control the OmaLive aerial screensaver + live wallpaper plugin.
+The interactive UI is the bar widget + panel (click the film icon in the bar).
+
+Usage: ${0##*/} [command]
+  status                 Print current state, per monitor (default).
+  screens                List each monitor and its state.
+  play <file> [screen]   Start a video everywhere, or on one monitor.
+  off <screen>           Blank one monitor; the others keep playing.
+  clear <screen|all>     Drop a monitor's own clip; follow the default.
+  freeze                 Decelerate to a stop; frozen frame becomes the wallpaper.
+  flourish               Play from the frozen frame, then glide to a stop.
+  stop                   Stop; static wallpaper shows through.
+  toggle                 Flip on/off (good for a keybind).
+  pause | resume         Pause/resume playback.
+  screensaver <cmd>      on|off (enable), start (show now), stop, status.
+  live <on|off>          Keep the wallpaper drifting instead of freezing.
+  transition <seconds>   Length of the freeze transition (1-10).
+  autopause <on|off>     Pause video under fullscreen windows.
+  shuffle <on|off>       Rotate clips while the screensaver is up.
+  fetch [dest]           Download aerial-style clips into the video folder.
+  optimize [file|dir]    Transcode clips to 60fps with a seamless loop (writes
+                         <clip>.opt.mp4; playback auto-prefers it). Run once
+                         after fetching or dropping in your own clips.
+
+Different clips on different screens:
+  ${0##*/} play ~/Videos/Aerial/a.mp4 DP-1
+  ${0##*/} play ~/Videos/Aerial/b.mp4 HDMI-A-1
+  ${0##*/} off DP-2              # that one stays on the static wallpaper
+
+The frozen wallpaper resumes automatically after reboot — no autostart step.
+USAGE
+    ;;
+  *) err "unknown command: $1 (try --help)"; exit 1 ;;
+esac

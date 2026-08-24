@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "omalive",
+  "name": "OmaLive",
+  "version": "0.1.0",
+  "author": "Nik",
+  "license": "MIT",
+  "description": "macOS Sonoma-style aerial screensaver and live wallpaper for omarchy 4.",
+  "kinds": ["service", "bar-widget"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "OmaLive",
+    "description": "Aerial screensaver and live wallpaper",
+    "category": "Desktop",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
