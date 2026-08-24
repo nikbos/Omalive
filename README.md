@@ -1,5 +1,8 @@
 # OmaLive
 
+<img width="2560" height="1440" alt="screenshot-2026-08-24_03-03-09" src="https://github.com/user-attachments/assets/ae2e017c-7fef-4df4-a732-92f8384cc7e4" />
+
+
 A macOS Sonoma-style **Aerial screensaver** and **live wallpaper** for Omarchy 4
 (Quickshell / Hyprland).
 
