@@ -34,18 +34,29 @@ suppresses the stock ttfx screensaver so OmaLive owns idle, adds the plugin,
 installs the `omalive` CLI, installs and enables the companion `OmaLiveLock`
 lock screen, and restarts the shell.
 
-To install only the plugin (no extras):
+To install only the plugin (no extras), review the exact commit you are about
+to run and register the plugin from that **local checkout** — never from a
+moving remote branch. `omarchy plugin add` executes the code as an unsandboxed
+plugin, so pin to a reviewed commit:
 
 ```bash
-omarchy plugin add https://github.com/nikbos/Omalive --enable
+# review the pinned commit first, then add the local checkout (git clone of a
+# local dir copies exactly the checked-out commit — nothing newer)
+git clone https://github.com/nikbos/Omalive ~/Projects/omalive/OmaLive
+git -C ~/Projects/omalive/OmaLive checkout 5fec27c2e58787a32e711844537b6a34616336d4
+omarchy plugin add ~/Projects/omalive/OmaLive --enable
 omarchy restart shell
 ```
 
 The companion lock screen is a separate plugin in its own repository
-([`nikbos/OmaLiveLock`](https://github.com/nikbos/OmaLiveLock)):
+([`nikbos/OmaLiveLock`](https://github.com/nikbos/OmaLiveLock)). Review and add
+it from a pinned local checkout the same way — do not `plugin add` an unpinned
+remote URL:
 
 ```bash
-omarchy plugin add https://github.com/nikbos/OmaLiveLock --enable
+git clone https://github.com/nikbos/OmaLiveLock ~/Projects/omalive/OmaLiveLock
+# review the checked-out commit, then:
+omarchy plugin add ~/Projects/omalive/OmaLiveLock --enable
 omarchy restart shell
 ```
 

@@ -124,13 +124,16 @@ Two repositories, one plugin each (the marketplace rule):
 `nikbos/Omalive` (this repo, the screensaver/wallpaper) and
 `nikbos/OmaLiveLock` (the lock screen companion).
 
-- `omarchy plugin add <url> --enable` clones the repo — **never copy files**;
-  copies can't be updated.
+- `omarchy plugin add <local-checkout> --enable` registers a plugin — **never
+  copy files** (copies can't be updated), and **never `plugin add` an unpinned
+  remote URL**: it executes unsandboxed code from a moving branch. Review a
+  pinned commit and add that local checkout instead.
 - `omarchy plugin update omalive`; `omarchy plugin update omalive-lock`;
   `omarchy plugin remove omalive`; `omarchy plugin remove omalive-lock`.
 - `install.sh` additionally installs the CLI (`~/.local/bin/omalive`) and
   `omalive-fetch`, sets the `screensaver-off` toggle, installs/enables the
-  lock-screen plugin from `nikbos/OmaLiveLock`, and restarts the shell.
+  lock-screen plugin from a reviewed local checkout of `nikbos/OmaLiveLock`
+  (skipped, with instructions, if none is present), and restarts the shell.
 - **Hard rule: never write into `~/.config/omarchy/plugins/` while the session
   is locked.** The shell watches that directory with inotify, and *any* file
   change reloads ALL plugin services — including the lock screen holding the

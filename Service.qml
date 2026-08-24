@@ -65,6 +65,30 @@ Item {
     readonly property int maxNameLength: 256
     readonly property int helperSeconds: 5
     readonly property var timeoutPrefix: ["timeout", "-k", "1", String(root.helperSeconds)]
+    // Descriptor-bound state read. The open is O_NOFOLLOW (a symlink cannot be
+    // followed), then type/owner/size are validated on the opened descriptor
+    // and the content is read through that same descriptor — there is no
+    // separate check-then-read window for an attacker to race (state.json lives
+    // under a predictable, user-writable path).
+    readonly property string stateReadScript:
+        "import os, stat, sys\n" +
+        "p = sys.argv[1]; limit = int(sys.argv[2])\n" +
+        "try:\n" +
+        "    fd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW)\n" +
+        "except OSError:\n" +
+        "    sys.exit(0)\n" +
+        "try:\n" +
+        "    st = os.fstat(fd)\n" +
+        "    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():\n" +
+        "        sys.exit(0)\n" +
+        "    if st.st_size > limit:\n" +
+        "        sys.exit(0)\n" +
+        "    data = os.read(fd, limit + 1)\n" +
+        "    if len(data) > limit:\n" +
+        "        sys.exit(0)\n" +
+        "    sys.stdout.write(data.decode('utf-8', 'replace'))\n" +
+        "finally:\n" +
+        "    os.close(fd)\n"
     // ---------------------------------------------------------------- config
     // Config-only options. `transitionSeconds` is the deceleration length; the
     // login flourish plays the footage for a beat and then decelerates to a stop.
@@ -479,7 +503,7 @@ Item {
             root._pendingState = payload;
             return ;
         }
-        stateWriteProc.command = root.timeoutPrefix.concat(["bash", "-c", 'd=$(dirname -- "$1"); mkdir -p -- "$d" || exit 1; ' + 't=$(mktemp -- "$1.XXXXXX") || exit 1; ' + 'printf %s "$2" > "$t" && mv -f -- "$t" "$1" || { rm -f -- "$t"; exit 1; }', "_", root.statePath, payload]);
+        stateWriteProc.command = root.timeoutPrefix.concat(["bash", "-c", 'd=$(dirname -- "$1"); mkdir -p -- "$d" || exit 1; ' + '[ -L "$1" ] && exit 1; ' + 't=$(mktemp -- "$1.XXXXXX") || exit 1; ' + 'printf %s "$2" > "$t" || { rm -f -- "$t"; exit 1; }; ' + '[ -f "$t" ] && [ ! -L "$t" ] || { rm -f -- "$t"; exit 1; }; ' + 'mv -f -- "$t" "$1" || { rm -f -- "$t"; exit 1; }; ' + '[ -f "$1" ] && [ ! -L "$1" ] || exit 1', "_", root.statePath, payload]);
         stateWriteProc.running = true;
     }
 
@@ -1151,7 +1175,7 @@ Item {
     Process {
         id: stateReadProc
 
-        command: root.timeoutPrefix.concat(["bash", "-c", 'if [ -L "$2" ] || [ ! -f "$2" ]; then exit 0; fi; ' + 'head -c "$1" -- "$2" 2>/dev/null || true', "_", String(root.maxStateBytes + 1), root.statePath])
+        command: root.timeoutPrefix.concat(["python3", "-c", root.stateReadScript, "_", root.statePath, String(root.maxStateBytes)])
         onExited: stateReadFallback.restart()
 
         stdout: StdioCollector {

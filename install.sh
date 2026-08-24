@@ -131,16 +131,16 @@ install_plugin() {
     fi
   fi
 
-  local url
-  url="$(git -C "$SCRIPT_DIR" remote get-url github 2>/dev/null \
-      || git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null \
-      || echo "$SCRIPT_DIR")"
-  echo "→ Adding the plugin from $url"
+  # Register the plugin from THIS local checkout, not from a moving remote
+  # branch. `omarchy plugin add` runs the plugin's code unsandboxed, and a git
+  # clone of a local dir copies exactly the reviewed commit that's checked out
+  # here — pinning installs to a reproducible, auditable state.
+  echo "→ Adding the plugin from the reviewed checkout $SCRIPT_DIR"
   if interactive; then
-    omarchy plugin add "$url" --enable
+    omarchy plugin add "$SCRIPT_DIR" --enable
     PLACEMENT_CHOSEN=1
   else
-    omarchy plugin add "$url" --enable --yes
+    omarchy plugin add "$SCRIPT_DIR" --enable --yes
   fi
 }
 install_plugin
@@ -168,8 +168,10 @@ place_widget
 # DISABLES the stock lock screen, and disabling/removing it restores the stock
 # lock.
 LOCK_PLUGIN_ID="omalive-lock"
-LOCK_URL="https://github.com/nikbos/OmaLiveLock"
 LOCK_DIR="$PLUGINS_DIR/$LOCK_PLUGIN_ID"
+# Path to a REVIEWED local checkout of nikbos/OmaLiveLock to install from
+# (override with OMALIVE_LOCK_SRC). Never a moving remote URL.
+LOCK_SRC="${OMALIVE_LOCK_SRC:-$HOME/Projects/omalive/OmaLiveLock}"
 
 install_lock_plugin() {
   if [ -L "$LOCK_DIR" ]; then
@@ -192,11 +194,31 @@ install_lock_plugin() {
     fi
   fi
 
-  echo "→ Adding the lock plugin from $LOCK_URL"
-  if interactive; then
-    omarchy plugin add "$LOCK_URL" --enable
+  # Install the lock plugin from a REVIEWED local checkout only. `omarchy
+  # plugin add` runs unsandboxed code, so we never silently clone a moving
+  # remote branch (see README "Install"): the user reviews a pinned checkout
+  # of nikbos/OmaLiveLock first and adds that directory.
+  if [ -d "$LOCK_SRC/.git" ] || [ -d "$LOCK_SRC" ]; then
+    echo "→ Adding the lock plugin from the reviewed checkout $LOCK_SRC"
+    if interactive; then
+      omarchy plugin add "$LOCK_SRC" --enable
+    else
+      omarchy plugin add "$LOCK_SRC" --enable --yes
+    fi
   else
-    omarchy plugin add "$LOCK_URL" --enable --yes
+    cat >&2 <<MSG
+
+⚠️  Skipping the OmaLive lock screen plugin.
+
+The companion lock plugin lives in its own repository (nikbos/OmaLiveLock). To
+stay safe it is only installed from a local, reviewed checkout — never from an
+unpinned remote. Add it separately:
+
+    git clone https://github.com/nikbos/OmaLiveLock ~/Projects/omalive/OmaLiveLock
+    # review the checked-out commit, then:
+    omarchy plugin add ~/Projects/omalive/OmaLiveLock --enable
+
+MSG
   fi
 }
 install_lock_plugin
