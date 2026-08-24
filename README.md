@@ -43,7 +43,7 @@ plugin, so pin to a reviewed commit:
 # review the pinned commit first, then add the local checkout (git clone of a
 # local dir copies exactly the checked-out commit — nothing newer)
 git clone https://github.com/nikbos/Omalive ~/Projects/omalive/OmaLive
-git -C ~/Projects/omalive/OmaLive checkout 5fec27c2e58787a32e711844537b6a34616336d4
+git -C ~/Projects/omalive/OmaLive checkout 68091e3fb555b740c91d05694080871cec1c93a4
 omarchy plugin add ~/Projects/omalive/OmaLive --enable
 omarchy restart shell
 ```
