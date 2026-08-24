@@ -67,8 +67,6 @@ fi
 for f in "$SCRIPT_DIR/manifest.json" "$SCRIPT_DIR/Service.qml" \
          "$SCRIPT_DIR/BarWidget.qml" "$SCRIPT_DIR/Panel.qml" \
          "$SCRIPT_DIR/WallpaperSurface.qml" "$SCRIPT_DIR/ScreensaverSurface.qml" \
-         "$SCRIPT_DIR/OmaLiveLock/manifest.json" "$SCRIPT_DIR/OmaLiveLock/Service.qml" \
-         "$SCRIPT_DIR/OmaLiveLock/LockView.qml" \
          "$CLI_SRC" "$FETCH_SRC" "$SCRIPT_DIR/optimize.sh"; do
   [ -f "$f" ] || { echo "Missing installer asset: $f" >&2; exit 1; }
 done
@@ -164,50 +162,41 @@ place_widget
 
 # ----- install the OmaLive lock screen plugin ---------------------------------
 # OmaLiveLock is a fork of the first-party omarchy.lock that plays the OmaLive
-# aerial footage on the lock screen (Sonoma style). Its manifest declares
-# omarchy.clonedFrom = omarchy.lock, so ENABLING it automatically DISABLES the
-# stock lock screen, and disabling/removing it restores the stock lock.
+# aerial footage on the lock screen (Sonoma style). It lives in its own
+# repository (one plugin per repo is the marketplace rule). Its manifest
+# declares omarchy.clonedFrom = omarchy.lock, so ENABLING it automatically
+# DISABLES the stock lock screen, and disabling/removing it restores the stock
+# lock.
 LOCK_PLUGIN_ID="omalive-lock"
-LOCK_SRC="$SCRIPT_DIR/OmaLiveLock"
+LOCK_URL="https://github.com/nikbos/OmaLiveLock"
 LOCK_DIR="$PLUGINS_DIR/$LOCK_PLUGIN_ID"
 
 install_lock_plugin() {
   if [ -L "$LOCK_DIR" ]; then
     echo "✓ Lock plugin is a dev symlink — leaving it alone"
-  else
-    if [ -e "$LOCK_DIR" ]; then
-      if [ -f "$LOCK_DIR/manifest.json" ] &&
-         [ "$(jq -r '.id // ""' "$LOCK_DIR/manifest.json")" = "$LOCK_PLUGIN_ID" ]; then
-        rm -rf "$LOCK_DIR"
-      else
-        echo "⚠️  $LOCK_DIR exists and is not $LOCK_PLUGIN_ID — leaving it alone." >&2
-        return
-      fi
+    return
+  fi
+  if [ -e "$LOCK_DIR" ]; then
+    if [ -d "$LOCK_DIR/.git" ]; then
+      echo "✓ Lock plugin already installed as a git checkout"
+      echo "  Update it with: omarchy plugin update $LOCK_PLUGIN_ID"
+      return
     fi
-    cp -r "$LOCK_SRC" "$LOCK_DIR"
-    echo "✓ Copied the lock screen plugin to $LOCK_DIR"
+    if [ -f "$LOCK_DIR/manifest.json" ] &&
+       [ "$(jq -r '.id // ""' "$LOCK_DIR/manifest.json")" = "$LOCK_PLUGIN_ID" ]; then
+      echo "→ Replacing a legacy copy-install of $LOCK_PLUGIN_ID with a git checkout"
+      rm -rf "$LOCK_DIR"
+    else
+      echo "⚠️  $LOCK_DIR exists and is not $LOCK_PLUGIN_ID — leaving it alone." >&2
+      return
+    fi
   fi
 
-  # Discover + enable (mirrors omarchy-plugin-clone's flow). Enabling a
-  # clonedFrom plugin disables the stock lock automatically.
-  omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true
-  local discovered=0 attempt
-  for (( attempt = 0; attempt < 40; attempt++ )); do
-    if omarchy-plugin-list --json 2>/dev/null |
-         jq -e --arg id "$LOCK_PLUGIN_ID" 'any(.[]; .id == $id)' >/dev/null 2>&1; then
-      discovered=1
-      break
-    fi
-    sleep 0.05
-  done
-  if (( discovered )); then
-    if omarchy-plugin-enable "$LOCK_PLUGIN_ID" >/dev/null 2>&1; then
-      echo "✓ Enabled $LOCK_PLUGIN_ID (stock lock screen auto-disabled)"
-    else
-      echo "⚠️  Could not enable $LOCK_PLUGIN_ID (try: omarchy plugin enable $LOCK_PLUGIN_ID)" >&2
-    fi
+  echo "→ Adding the lock plugin from $LOCK_URL"
+  if interactive; then
+    omarchy plugin add "$LOCK_URL" --enable
   else
-    echo "⚠️  $LOCK_PLUGIN_ID not discovered yet; enable later with: omarchy plugin enable $LOCK_PLUGIN_ID" >&2
+    omarchy plugin add "$LOCK_URL" --enable --yes
   fi
 }
 install_lock_plugin

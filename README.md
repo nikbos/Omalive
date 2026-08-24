@@ -11,8 +11,8 @@ A macOS Sonoma-style **Aerial screensaver** and **live wallpaper** for Omarchy 4
 - **Live lock screen** — the lock screen plays the aerial footage too (macOS
   Sonoma style): locking resumes the footage exactly where it was, it keeps
   drifting while locked, and on unlock the wallpaper freezes on the exact
-  frame the lock last showed. Provided by the bundled `OmaLiveLock` plugin,
-  a fork of the stock `omarchy.lock`.
+  frame the lock last showed. Provided by the companion `OmaLiveLock` plugin
+  (own repository), a fork of the stock `omarchy.lock`.
 - **Sonoma freeze transition** — when you dismiss it (or after unlocking), the
   footage **decelerates to a stop** over ~2 seconds and the desktop wallpaper
   becomes the **exact frozen frame** where the footage stopped.
@@ -31,12 +31,21 @@ git clone <this-repo> ~/Projects/omalive/OmaLive
 
 The installer installs dependencies (`qt6-multimedia`, `jq`, `python3`),
 suppresses the stock ttfx screensaver so OmaLive owns idle, adds the plugin,
-installs the `omalive` CLI, and restarts the shell.
+installs the `omalive` CLI, installs and enables the companion `OmaLiveLock`
+lock screen, and restarts the shell.
 
 To install only the plugin (no extras):
 
 ```bash
-omarchy plugin add <repo-url> --enable
+omarchy plugin add https://github.com/nikbos/Omalive --enable
+omarchy restart shell
+```
+
+The companion lock screen is a separate plugin in its own repository
+([`nikbos/OmaLiveLock`](https://github.com/nikbos/OmaLiveLock)):
+
+```bash
+omarchy plugin add https://github.com/nikbos/OmaLiveLock --enable
 omarchy restart shell
 ```
 
@@ -116,8 +125,10 @@ aerial drone clips from Wikimedia Commons. Drop in your own `.mp4` / `.mkv` /
 
 ## Live lock screen (OmaLiveLock)
 
-`install.sh` also installs `OmaLiveLock/` — a fork of the stock `omarchy.lock`
-plugin that plays the OmaLive aerial footage on the lock screen:
+`install.sh` also installs and enables the companion `OmaLiveLock` plugin from
+its own repository ([`nikbos/OmaLiveLock`](https://github.com/nikbos/OmaLiveLock))
+— a fork of the stock `omarchy.lock` that plays the OmaLive aerial footage on
+the lock screen:
 
 - Locking resumes the footage exactly where it was (screensaver or wallpaper)
   and keeps it playing behind the stock password UI with a light scrim.

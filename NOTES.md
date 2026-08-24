@@ -60,9 +60,10 @@ surface set. On completion the frozen frame is captured and parked.
 
 ## Live lock screen (OmaLiveLock)
 
-The lock screen is a separate plugin, `OmaLiveLock/` — a fork of the
-first-party `omarchy.lock` service (only the blocks marked "OmaLive" differ;
-keep the rest in sync with upstream). Its manifest carries
+The lock screen is a separate plugin in its own repository
+(`nikbos/OmaLiveLock`; the marketplace rule is one plugin per repository) — a
+fork of the first-party `omarchy.lock` service (only the blocks marked
+"OmaLive" differ; keep the rest in sync with upstream). Its manifest carries
 `omarchy.clonedFrom: omarchy.lock`, which makes the registry auto-disable the
 stock lock when it is enabled and restore the stock lock when it is disabled
 or removed (see `PluginRegistry.setEnabled`). Both register the same `lock`
@@ -119,12 +120,17 @@ hostile (file name) input. `Model.js` holds the pure, unit-tested helpers.
 
 ## Installing / updating / removing
 
+Two repositories, one plugin each (the marketplace rule):
+`nikbos/Omalive` (this repo, the screensaver/wallpaper) and
+`nikbos/OmaLiveLock` (the lock screen companion).
+
 - `omarchy plugin add <url> --enable` clones the repo — **never copy files**;
   copies can't be updated.
-- `omarchy plugin update omalive`; `omarchy plugin remove omalive`.
+- `omarchy plugin update omalive`; `omarchy plugin update omalive-lock`;
+  `omarchy plugin remove omalive`; `omarchy plugin remove omalive-lock`.
 - `install.sh` additionally installs the CLI (`~/.local/bin/omalive`) and
   `omalive-fetch`, sets the `screensaver-off` toggle, installs/enables the
-  `OmaLiveLock` lock-screen plugin, and restarts the shell.
+  lock-screen plugin from `nikbos/OmaLiveLock`, and restarts the shell.
 - **Hard rule: never write into `~/.config/omarchy/plugins/` while the session
   is locked.** The shell watches that directory with inotify, and *any* file
   change reloads ALL plugin services — including the lock screen holding the
@@ -136,13 +142,13 @@ hostile (file name) input. `Model.js` holds the pure, unit-tested helpers.
 - Dev loop (this is how the live install is set up — symlinks, never copies):
   ```bash
   rm -rf ~/.config/omarchy/plugins/omalive ~/.config/omarchy/plugins/omalive-lock
-  ln -s /path/to/this/checkout              ~/.config/omarchy/plugins/omalive
-  ln -s /path/to/this/checkout/OmaLiveLock  ~/.config/omarchy/plugins/omalive-lock
+  ln -s /path/to/Omalive/checkout      ~/.config/omarchy/plugins/omalive
+  ln -s /path/to/OmaLiveLock/checkout  ~/.config/omarchy/plugins/omalive-lock
   omarchy restart shell
   ```
   Symlinks *inside* the plugin folder are rejected by validation, but a
   symlinked folder is fine. The inotify watcher does not follow the symlink, so
-  editing in the checkout triggers nothing — reloads only happen when you run
+  editing in the checkouts triggers nothing — reloads only happen when you run
   `omarchy-restart-shell` (safe: it refuses while locked). After QML edits:
   `omarchy-restart-shell`. Never `omarchy-refresh-shell` — it resets
   `shell.json`.
