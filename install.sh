@@ -219,6 +219,7 @@ stay safe it is only installed from a local, reviewed checkout — never from an
 unpinned remote. Add it separately:
 
     git clone https://github.com/nikbos/OmaLiveLock ~/Projects/omalive/OmaLiveLock
+    git -C ~/Projects/omalive/OmaLiveLock checkout 9f160be35a0d15eede0f4cb0f63d9a4c1d20933d
     # review the checked-out commit, then:
     omarchy plugin add ~/Projects/omalive/OmaLiveLock --enable
 

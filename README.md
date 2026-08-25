@@ -11,11 +11,16 @@ A macOS Sonoma-style **Aerial screensaver** and **live wallpaper** for Omarchy 4
 - **Live lock screen** — the lock screen plays the aerial footage too (macOS
   Sonoma style): locking resumes the footage exactly where it was, it keeps
   drifting while locked, and on unlock the wallpaper freezes on the exact
-  frame the lock last showed. Provided by the companion `OmaLiveLock` plugin
+  frame the lock last showed. The lock appears on the exact frozen aerial
+  frame (no dark flash while the video decodes) and the screensaver yields the
+  moment you lock — even a fast lock→unlock never leaves the aerial up over
+  the desktop. Provided by the companion `OmaLiveLock` plugin
   (own repository), a fork of the stock `omarchy.lock`.
 - **Sonoma freeze transition** — when you dismiss it (or after unlocking), the
-  footage **decelerates to a stop** over ~2 seconds and the desktop wallpaper
-  becomes the **exact frozen frame** where the footage stopped.
+  footage keeps playing at normal speed for ~2 seconds, then freezes: the
+  screensaver fades straight into the desktop with the **same playback
+  continuing** on the wallpaper, and the wallpaper becomes the **exact frozen
+  frame** where the footage stopped.
 - **Live wallpaper** — optionally keep the wallpaper slowly drifting instead of
   freezing (`omalive live on`).
 - **Multi-monitor** — one clip per screen or one clip everywhere.
@@ -24,8 +29,14 @@ A macOS Sonoma-style **Aerial screensaver** and **live wallpaper** for Omarchy 4
 
 ## Install
 
+The installer (`install.sh`) and `omarchy plugin add` execute this repository's
+code unsandboxed, so always install from a **reviewed, pinned checkout** —
+never from a moving remote branch. `git clone` of a local dir copies exactly
+the checked-out commit, so review the pinned commit first, then:
+
 ```bash
-git clone <this-repo> ~/Projects/omalive/OmaLive
+git clone https://github.com/nikbos/Omalive ~/Projects/omalive/OmaLive
+git -C ~/Projects/omalive/OmaLive checkout 5eef4361766410deb61aea5230fc493634735a6d
 ~/Projects/omalive/OmaLive/install.sh
 ```
 
@@ -34,16 +45,14 @@ suppresses the stock ttfx screensaver so OmaLive owns idle, adds the plugin,
 installs the `omalive` CLI, installs and enables the companion `OmaLiveLock`
 lock screen, and restarts the shell.
 
-To install only the plugin (no extras), review the exact commit you are about
-to run and register the plugin from that **local checkout** — never from a
-moving remote branch. `omarchy plugin add` executes the code as an unsandboxed
-plugin, so pin to a reviewed commit:
+To install only the plugin (no extras), register it from a pinned local
+checkout of the same reviewed commit:
 
 ```bash
 # review the pinned commit first, then add the local checkout (git clone of a
 # local dir copies exactly the checked-out commit — nothing newer)
 git clone https://github.com/nikbos/Omalive ~/Projects/omalive/OmaLive
-git -C ~/Projects/omalive/OmaLive checkout 68091e3fb555b740c91d05694080871cec1c93a4
+git -C ~/Projects/omalive/OmaLive checkout 5eef4361766410deb61aea5230fc493634735a6d
 omarchy plugin add ~/Projects/omalive/OmaLive --enable
 omarchy restart shell
 ```
@@ -55,6 +64,7 @@ remote URL:
 
 ```bash
 git clone https://github.com/nikbos/OmaLiveLock ~/Projects/omalive/OmaLiveLock
+git -C ~/Projects/omalive/OmaLiveLock checkout 9f160be35a0d15eede0f4cb0f63d9a4c1d20933d
 # review the checked-out commit, then:
 omarchy plugin add ~/Projects/omalive/OmaLiveLock --enable
 omarchy restart shell
@@ -143,8 +153,13 @@ its own repository ([`nikbos/OmaLiveLock`](https://github.com/nikbos/OmaLiveLock
 — a fork of the stock `omarchy.lock` that plays the OmaLive aerial footage on
 the lock screen:
 
-- Locking resumes the footage exactly where it was (screensaver or wallpaper)
-  and keeps it playing behind the stock password UI with a light scrim.
+- Locking resumes the footage exactly where it was (screensaver or wallpaper).
+  The lock surface first shows the exact frozen aerial frame OmaLive captured
+  at lock time — no dark decode gap — then fades the live video in and keeps
+  it playing behind the stock password UI with a light scrim.
+- Locking also force-exits the screensaver overlay immediately (it is hidden
+  by the session lock anyway), so a fast lock→unlock never leaves the aerial
+  covering the desktop.
 - While locked, the lock surfaces sample their playback position; on unlock it
   is handed back to OmaLive, which parks the wallpaper on the exact frame the
   lock last showed and then runs the usual login flourish from there.
