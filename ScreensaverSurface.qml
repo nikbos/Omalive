@@ -84,6 +84,21 @@ PanelWindow {
         player.pause();
     }
 
+    // Capture the currently displayed frame to a PNG. Used by the lock screen
+    // so it can show the exact aerial frame the instant its surface maps,
+    // before the live video fades in and continues. Calls `cb(path)` with the
+    // saved path, or "" when the grab/save failed.
+    function captureFrame(path, cb) {
+        if (typeof cb !== "function" || surface.width <= 0 || surface.height <= 0)
+            return ;
+
+        var grab = out.grabToImage(function(result) {
+            cb(result && result.saveToFile(path) ? path : "");
+        }, Qt.size(surface.width, surface.height));
+        if (!grab)
+            cb("");
+    }
+
     // Any pointer or key activity dismisses the screensaver. Required for
     // manual starts (menu / CLI): the system isn't idle then, so IdleMonitor
     // alone never fires the idle->active transition that ends an idle-start.

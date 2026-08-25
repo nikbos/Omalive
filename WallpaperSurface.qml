@@ -109,6 +109,21 @@ PanelWindow {
         player.play();
     }
 
+    // Capture the currently displayed frame to a PNG. Used by the lock screen
+    // so it can show the exact aerial frame the instant its surface maps,
+    // before the live video fades in and continues. Calls `cb(path)` with the
+    // saved path, or "" when the grab/save failed.
+    function captureFrame(path, cb) {
+        if (typeof cb !== "function" || surface.width <= 0 || surface.height <= 0)
+            return ;
+
+        var grab = out.grabToImage(function(result) {
+            cb(result && result.saveToFile(path) ? path : "");
+        }, Qt.size(surface.width, surface.height));
+        if (!grab)
+            cb("");
+    }
+
     screen: modelData
     visible: true
     color: "transparent"

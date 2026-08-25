@@ -165,6 +165,8 @@ Item {
     property var screenPositions: ({
     }) // { "HDMI-A-1": 12345 } frozen frame positions
     property int frozenPosition: 0 // ms; where the default clip froze
+    property var lockFramePaths: ({
+    }) // { "DP-1": "/…/lockframe-DP-1.png" } frozen-frame captures for the lock screen
     property bool _stateLoaded: false
     property bool _stateStreamDone: false // state.json stream finished (guards the read fallback)
     property string _seedSig: ""
@@ -655,30 +657,37 @@ Item {
             root.startDecel("screensaver");
             return;
         }
-        // Keep the footage playing at normal speed for stopDelayMs, then freeze
-        // and crossfade to the desktop — no slowdown before the swap.
         if (root.decelActive && root._decelTarget === "screensaver")
             root.stopDecel();
 
         if (screensaverStopTimer.running)
             return;
 
-        if (root.stopDelayMs > 0) {
-            // Keep the wallpaper in step with the screensaver while it plays
-            // out the delay, so the swap lands on the exact final frame.
-            var wl = root.wallpaperSurfaces;
-            for (var i = 0; i < wl.length; i++) {
-                var pos = root.surfacePosition(root.screensaverSurfaces, wl[i].monName);
-                if (pos < 0)
-                    pos = wl[i].position();
+        // Hand the footage straight over to the desktop: seed the wallpaper at
+        // the screensaver's current position and drop the overlay NOW, so the
+        // screensaver ends immediately and the SAME playback continues on the
+        // wallpaper (crossfading in as the overlay fades out) for stopDelayMs
+        // before freezing in place.
+        var wl = root.wallpaperSurfaces;
+        for (var i = 0; i < wl.length; i++) {
+            var pos = root.surfacePosition(root.screensaverSurfaces, wl[i].monName);
+            if (pos < 0)
+                pos = wl[i].position();
 
-                wl[i].setRate(1);
-                wl[i].playFrom(pos);
-            }
+            wl[i].setRate(1);
+            wl[i].playFrom(pos);
+        }
+        root.screensaverActive = false;
+        root.wallpaperFrozen = false;
+        root.wallpaperVisible = true;
+        root.showCursor();
+        screensaverGraceTimer.stop();
+
+        if (root.stopDelayMs > 0) {
             screensaverStopTimer.interval = root.stopDelayMs;
             screensaverStopTimer.restart();
         } else {
-            root.finishScreensaverExit();
+            root.parkWallpaperAfterScreensaver();
         }
     }
 
@@ -742,6 +751,24 @@ Item {
         root.captureFrozenFrames();
         root.screensaverActive = false;
         root.wallpaperVisible = true;
+        if (root.liveWallpaper)
+            root.resumeLiveDrift();
+        else
+            root.wallpaperFrozen = true;
+
+        root.showCursor();
+        screensaverGraceTimer.stop();
+        console.log("omalive: screensaver exit");
+        root.persistState();
+    }
+
+    // Freeze the wallpaper where the footage currently is after the stop delay
+    // played out on the desktop (the overlay was already handed off in
+    // exitScreensaver, so the frame is captured from the wallpaper itself, not
+    // the screensaver surfaces).
+    function parkWallpaperAfterScreensaver() {
+        root.stopDecel();
+        root.captureWallpaperFrames();
         if (root.liveWallpaper)
             root.resumeLiveDrift();
         else
@@ -1217,6 +1244,10 @@ Item {
         if (Object.keys(positions).length === 0)
             return "empty";
 
+        // A pending screensaver-dismissal stop must not freeze the wallpaper
+        // while it is tracking the lock.
+        screensaverStopTimer.stop();
+
         var first = Model.defaultPositionFrom(positions, -1);
         if (first >= 0)
             root.frozenPosition = first;
@@ -1233,6 +1264,12 @@ Item {
             ws[i].setRate(1);
             ws[i].playFrom(root.frozenPositionFor(ws[i].monName));
         }
+        // The lock is engaging and will cover every surface; the screensaver
+        // overlay must yield NOW (not on the 3s lock poll) so a fast
+        // lock->unlock never leaves the aerial up over the desktop.
+        if (root.screensaverActive)
+            root.forceExitScreensaver();
+
         root.persistState();
         return "ok";
     }
@@ -1334,6 +1371,60 @@ Item {
         }
         flourishTimer.interval = root.glideToStop ? Math.max(300, Math.floor(root.effectiveTransitionMs * 0.4)) : Math.max(300, root.stopDelayMs);
         flourishTimer.restart();
+    }
+
+    // ------------------------------------------------------- lock frozen frame
+    // A predictable per-screen path for the lock's frozen-frame PNG. Written by
+    // captureFrozenFramesForLock, read by the OmaLive lock screen the instant
+    // its surface maps so it can show the exact aerial frame (no dark decode
+    // gap) before the live video fades in and continues.
+    function lockFramePathFor(name) {
+        var n = root.safeName(String(name || ""), "");
+        return n ? root.stateDir + "/lockframe-" + n + ".png" : "";
+    }
+
+    function frozenFramePath(name) {
+        var n = String(name || "");
+        var p = root.lockFramePaths ? root.lockFramePaths[n] : "";
+        return p ? root.toFileUrl(p) : "";
+    }
+
+    // Capture each monitor's current aerial frame to a PNG for the lock screen
+    // (macOS continuity: the lock appears frozen at the exact frame, then goes
+    // live). Grabs the screensaver overlay while it is still mapped/rendering,
+    // else the wallpaper surface. The grabs are async but land well inside the
+    // lock's 500ms screen-stabilize window. Failures leave "" (the lock falls
+    // back to its stock blurred wallpaper).
+    function captureFrozenFramesForLock() {
+        var out = ({
+        });
+        var list = root.screensaverActive ? root.screensaverSurfaces : root.wallpaperSurfaces;
+        for (var i = 0; i < list.length; i++) {
+            var s = list[i];
+            var n = String(s.monName || "");
+            var path = root.lockFramePathFor(n);
+            if (path === "")
+                continue;
+
+            out[n] = "";
+            root.captureOneLockFrame(s, n, path, out);
+        }
+        root.lockFramePaths = out;
+    }
+
+    // Run one surface grab and fold the result into the shared map (bound per
+    // iteration — QML closures share the loop's `s`, so the surface is passed
+    // in as a parameter, never captured). Each completion publishes a fresh map
+    // so property-change notifications fire and the lock's frozenFrameUrl
+    // binding re-evaluates even if the grab lands after the lock surface maps.
+    function captureOneLockFrame(surface, name, path, out) {
+        surface.captureFrame(path, function(resultPath) {
+            out[name] = resultPath;
+            var m = ({
+            });
+            for (var k in out) m[k] = out[k];
+            root.lockFramePaths = m;
+        });
     }
 
     function setTransitionSeconds(v) {
@@ -1586,8 +1677,9 @@ Item {
 
         repeat: false
         onTriggered: {
-            if (root.screensaverActive)
-                root.finishScreensaverExit();
+            // The overlay is gone; freeze the wallpaper where the footage is now.
+            if (!root.screensaverActive)
+                root.parkWallpaperAfterScreensaver();
         }
     }
 

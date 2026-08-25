@@ -60,10 +60,11 @@ most of the glide, which QtMultimedia renders as a choppy slideshow). Stop
 transitions (screensaver dismissal, unlock/login flourish) default to playing
 the footage at normal speed for `stopDelaySeconds` (2) then freezing it in
 place — no slowdown. `glideToStop: true` restores the old deceleration instead.
-For the screensaver stop the wallpaper surfaces are seeded at the screensaver's
-position and play in step for the delay, so the overlay→desktop swap lands on
-the exact final frame with no visible seek. On completion the frozen frame is
-captured and parked.
+For the screensaver stop the overlay hands off immediately: the wallpaper is
+seeded at the screensaver's position and the overlay fades out while the
+wallpaper fades in, so the SAME playback continues on the desktop for the
+delay, and only then freezes on the exact final frame (captured from the
+wallpaper itself via `parkWallpaperAfterScreensaver`).
 
 ## Live lock screen (OmaLiveLock)
 
@@ -82,14 +83,27 @@ Continuity flow (all in-process, same Quickshell instance):
    the OmaLive service (`positionsObject()`: live screensaver surfaces first,
    then wallpaper surfaces, then the persisted frozen frames) and stores them
    as the per-screen seek targets.
-2. `LockView.qml` — stock password UI with a muted, looping `MediaPlayer`
+2. `beginLock()` also calls `captureFrozenFramesForLock()`, which grabs each
+   monitor's currently rendered aerial frame (the screensaver overlay when it
+   is up, else the wallpaper) to a PNG in the OmaLive state dir. `LockView.qml`
+   shows that exact frame frozen the instant its surface maps — no dark
+   decode gap — then fades the live `MediaPlayer` in over it once the first
+   frame renders and continues from the same position. No capture → the stock
+   blurred wallpaper covers the gap instead.
+3. `startWallpaperFollow()` — called right after the capture — seeds the
+   wallpaper at the captured positions and plays it in lockstep while the
+   lock engages. It also force-exits the screensaver overlay immediately: the
+   session lock covers everything anyway, and yielding now (rather than on the
+   3s lock poll) guarantees a fast lock→unlock never leaves the aerial up over
+   the desktop. The overlay stays mapped only long enough for its grab to land.
+4. `LockView.qml` — stock password UI with a muted, looping `MediaPlayer`
    behind it. The clip is `omalive.urlForScreen(name)` (per-monitor overrides
    work; `WlSessionLockSurface.screen` supplies the output), seeked to the
    captured position, then playing while locked. A 0.22 black scrim keeps the
    UI readable. No clip / player error → stock blurred wallpaper fallback.
-3. While locked, each lock surface samples `player.position` every 250ms and
+5. While locked, each lock surface samples `player.position` every 250ms and
    reports it to the lock service (`recordLockPosition`).
-4. `finishUnlock()` — BEFORE releasing the session lock, the sampled positions
+6. `finishUnlock()` — BEFORE releasing the session lock, the sampled positions
    are handed to OmaLive (`applyLockHandoff`, exposed as IPC too). OmaLive
    validates the payload the same way as state.json (byte cap +
    `normalizeScreenPositions`), updates `screenPositions`/`frozenPosition`,
