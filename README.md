@@ -36,7 +36,7 @@ the checked-out commit, so review the pinned commit first, then:
 
 ```bash
 git clone https://github.com/nikbos/Omalive ~/Projects/omalive/OmaLive
-git -C ~/Projects/omalive/OmaLive checkout fcc7c43295036f02a40799370b19a8260c60df22
+git -C ~/Projects/omalive/OmaLive checkout 0267a019845e2ad25b9e52dc03f24a6badee6579
 ~/Projects/omalive/OmaLive/install.sh
 ```
 
@@ -52,7 +52,7 @@ checkout of the same reviewed commit:
 # review the pinned commit first, then add the local checkout (git clone of a
 # local dir copies exactly the checked-out commit — nothing newer)
 git clone https://github.com/nikbos/Omalive ~/Projects/omalive/OmaLive
-git -C ~/Projects/omalive/OmaLive checkout fcc7c43295036f02a40799370b19a8260c60df22
+git -C ~/Projects/omalive/OmaLive checkout 0267a019845e2ad25b9e52dc03f24a6badee6579
 omarchy plugin add ~/Projects/omalive/OmaLive --enable
 omarchy restart shell
 ```
@@ -186,7 +186,7 @@ instead — it removes everything `install.sh` installed:
 ```bash
 # from the same reviewed checkout you installed from:
 git clone https://github.com/nikbos/Omalive ~/Projects/omalive/OmaLive
-git -C ~/Projects/omalive/OmaLive checkout fcc7c43295036f02a40799370b19a8260c60df22
+git -C ~/Projects/omalive/OmaLive checkout 0267a019845e2ad25b9e52dc03f24a6badee6579
 ~/Projects/omalive/OmaLive/uninstall.sh
 ```
 
