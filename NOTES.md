@@ -54,9 +54,13 @@ Motion-Wallpaper reference has the A/B pattern if that ever matters.
 
 ## Deceleration
 
-`decelTick` advances a 0→1 progress and sets `playbackRate = (1-t)^3`
-(ease-out — starts fast, glides to a stop, the Sonoma feel) on the target
-surface set. On completion the frozen frame is captured and parked.
+`decelTick` advances a 0→1 progress and sets `playbackRate = sqrt(1-t)` on the
+target surface set (a sqrt curve, not a cubic — a cubic sits under ~15fps for
+most of the glide, which QtMultimedia renders as a choppy slideshow). For the
+screensaver exit the wallpaper surfaces are seeded at the screensaver's
+position and glide at the same rate, so the overlay→desktop swap lands on the
+exact final frame with no visible seek. On completion the frozen frame is
+captured and parked.
 
 ## Live lock screen (OmaLiveLock)
 
@@ -106,8 +110,10 @@ covers a failing player.
 
 Mirrors Motion-Wallpaper's hardening: 256KB byte cap before `JSON.parse`, path
 length caps, per-field length caps, entry caps on `screenVideos`/
-`screenPositions`, `timeout` on every subprocess, atomic state writes
-(`mktemp` + `mv`), and `textFormat: Text.PlainText` on every text that renders
+`screenPositions`, `timeout` on every subprocess, descriptor-bound atomic state
+reads and writes (python: `O_NOFOLLOW` open, `fstat` type/owner/size checks on
+the descriptor, `mkstemp` + `os.replace` for the write, payload over stdin so
+it never goes near argv), and `textFormat: Text.PlainText` on every text that renders
 hostile (file name) input. `Model.js` holds the pure, unit-tested helpers.
 
 ## Screensaver trigger summary

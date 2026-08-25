@@ -7,6 +7,11 @@
 #     drift is ~21fps instead of a ~10fps slideshow.
 #   * The tail crossfaded into the head (xfade) so MediaPlayer's Infinite loop
 #     has no hard cut at the seam.
+#   * Dense keyframes (one every GOP frames = 1s at 60fps) so any seek — the
+#     lock-screen handoff, the screensaver resume — decodes at most ~1s of
+#     footage instead of up to a full GOP (x264's default 250 frames at 60fps
+#     is a 4.17s keyframe gap, which made unlock/screensaver seeks visibly
+#     stall).
 #   * No audio stream (-an), h264/yuv420p + faststart for QtMultimedia.
 #
 # Output is written next to each source as <clip>.opt.mp4. The OmaLive service
@@ -15,17 +20,25 @@
 #
 # Usage:
 #   omalive-optimize [file-or-dir]      default dir: ~/Videos/Aerial
+#   omalive-optimize -f [file-or-dir]   re-encode even up-to-date clips
 #
-# Idempotent: files whose .opt.mp4 is newer than the source are skipped.
-# Requires: ffmpeg, ffprobe.
+# Idempotent: files whose .opt.mp4 is newer than the source are skipped (unless
+# -f/--force). Requires: ffmpeg, ffprobe.
 # ==============================================================================
 
 set -euo pipefail
+
+FORCE=0
+if [[ "${1:-}" == "-f" || "${1:-}" == "--force" ]]; then
+  FORCE=1
+  shift
+fi
 
 DEST="${1:-$HOME/Videos/Aerial}"
 X=0.8          # seam crossfade length (seconds)
 FPS=60
 CRF=24
+GOP=60         # keyframe interval in frames (60 = every 1s at 60fps)
 LOG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}"
 LOG_FILE="$LOG_DIR/omalive.log"
 mkdir -p "$LOG_DIR"
@@ -50,13 +63,13 @@ transcode() {
 [c]trim=start=${mid_end},setpts=PTS-STARTPTS[tail];
 [tail][head]xfade=transition=fade:duration=${X}:offset=0[xf];
 [mid][xf]concat=n=2:v=1:a=0[out]
-" -map "[out]" -c:v libx264 -preset medium -crf "$CRF" -an -movflags +faststart "$out.tmp.mp4" \
+" -map "[out]" -c:v libx264 -preset medium -crf "$CRF" -g "$GOP" -keyint_min "$GOP" -sc_threshold 0 -an -movflags +faststart "$out.tmp.mp4" \
     && return 0
   # Tier 2 (xfade unavailable/errored): 60fps only; the loop seam stays a cut.
   err "seam crossfade failed for $src — falling back to interpolation only"
   rm -f "$out.tmp.mp4"
   ffmpeg -y -hide_banner -loglevel error -i "$src" -vf "framerate=fps=${FPS}" \
-      -c:v libx264 -preset medium -crf "$CRF" -an -movflags +faststart "$out.tmp.mp4"
+      -c:v libx264 -preset medium -crf "$CRF" -g "$GOP" -keyint_min "$GOP" -sc_threshold 0 -an -movflags +faststart "$out.tmp.mp4"
 }
 
 optimize_one() {
@@ -64,7 +77,7 @@ optimize_one() {
   [ -f "$f" ] || return 0
   case "$f" in *.opt.mp4) return 0 ;; esac
   local out="$f.opt.mp4"
-  if [ -f "$out" ] && [ "$out" -nt "$f" ]; then
+  if [ "$FORCE" -ne 1 ] && [ -f "$out" ] && [ "$out" -nt "$f" ]; then
     echo "  ✓ $out (up to date)"
     return 0
   fi

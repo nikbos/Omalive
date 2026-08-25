@@ -22,15 +22,29 @@ set -euo pipefail
 DEST="${1:-$HOME/Videos/Aerial}"
 
 # Hard cap on any single downloaded clip (bytes). Aerial HD clips are large, so
-# 1 GiB is generous, but bounded: a compromised or misbehaving source can never
-# fill the disk. Override with OMALIVE_MAX_FILESIZE (e.g. "500M").
-MAX_FILESIZE="${OMALIVE_MAX_FILESIZE:-1G}"
+# the default is 1 GiB — generous but bounded: a compromised or misbehaving
+# source can never fill the disk. The cap is a HARD ceiling: OMALIVE_MAX_FILESIZE
+# may lower it (e.g. "500M") but can never raise it past HARD_CAP_BYTES, and an
+# unparseable value falls back to the default rather than disabling the check.
+DEFAULT_CAP_BYTES=$(( 1024 * 1024 * 1024 ))   # 1 GiB
+HARD_CAP_BYTES=$(( 2 * 1024 * 1024 * 1024 ))  # 2 GiB ceiling
 
-# Convert the human-readable cap (K/M/G suffixes, "kib/mib" etc.) to plain bytes
-# for the post-download `stat` check.
-MAX_FILESIZE_BYTES="$(numfmt --from=iec "${MAX_FILESIZE}" 2>/dev/null \
-  || numfmt --from=auto "${MAX_FILESIZE}" 2>/dev/null \
-  || printf '%s' "${MAX_FILESIZE}")"
+cap_raw="${OMALIVE_MAX_FILESIZE:-1G}"
+cap_bytes="$(numfmt --from=iec "${cap_raw}" 2>/dev/null \
+  || numfmt --from=auto "${cap_raw}" 2>/dev/null \
+  || printf '%s' '')"
+# numfmt accepts "1G"/"1024M"/…; anything else (or an empty result) gets the
+# default, and any value over the ceiling is clamped down to it.
+if [[ ! "${cap_bytes}" =~ ^[0-9]+$ ]]; then
+  cap_bytes="${DEFAULT_CAP_BYTES}"
+fi
+if (( cap_bytes > HARD_CAP_BYTES )); then
+  cap_bytes="${HARD_CAP_BYTES}"
+fi
+MAX_FILESIZE_BYTES="${cap_bytes}"
+# curl's --max-filesize takes plain bytes; the same numeric value backs the
+# post-download `stat` check below.
+MAX_FILESIZE="${MAX_FILESIZE_BYTES}"
 
 # name | url | license
 MANIFEST=(

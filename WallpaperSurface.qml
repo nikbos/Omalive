@@ -54,6 +54,10 @@ PanelWindow {
         return player.position;
     }
 
+    function duration() {
+        return player.duration;
+    }
+
     // Seek immediately; if the media isn't seekable yet (source still loading),
     // remember the position and land it once the player reports seekable.
     function applySeek(ms) {

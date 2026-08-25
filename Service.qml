@@ -89,6 +89,43 @@ Item {
         "    sys.stdout.write(data.decode('utf-8', 'replace'))\n" +
         "finally:\n" +
         "    os.close(fd)\n"
+    // Descriptor-bound state write (mirrors the read). The payload arrives on
+    // stdin (never argv — argv caps per-argument at ~128KiB), written to a
+    // fresh mkstemp file in the state directory, fsynced, then atomically
+    // renamed over the target (os.replace replaces any symlink there, it never
+    // writes through one), and finally re-opened O_NOFOLLOW and validated on
+    // the descriptor (regular file, our uid, exact size) before the result is
+    // accepted. The mkstemp+rename leaves no check-then-use window for an
+    // attacker to redirect the write.
+    readonly property string stateWriteScript:
+        "import os, stat, sys, tempfile\n" +
+        "p = sys.argv[1]; want = int(sys.argv[2])\n" +
+        "d = os.path.dirname(p) or '.'\n" +
+        "try:\n" +
+        "    data = sys.stdin.buffer.read(want)\n" +
+        "    if len(data) != want:\n" +
+        "        raise ValueError('short read')\n" +
+        "    os.makedirs(d, exist_ok=True)\n" +
+        "    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(p) + '.', dir=d)\n" +
+        "    try:\n" +
+        "        with os.fdopen(fd, 'wb') as f:\n" +
+        "            f.write(data)\n" +
+        "            f.flush()\n" +
+        "            os.fsync(f.fileno())\n" +
+        "        os.replace(tmp, p)\n" +
+        "    except BaseException:\n" +
+        "        os.unlink(tmp)\n" +
+        "        raise\n" +
+        "    vfd = os.open(p, os.O_RDONLY | os.O_NOFOLLOW)\n" +
+        "    try:\n" +
+        "        st = os.fstat(vfd)\n" +
+        "    finally:\n" +
+        "        os.close(vfd)\n" +
+        "    if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_size != want:\n" +
+        "        os.unlink(p)\n" +
+        "        sys.exit(1)\n" +
+        "except (OSError, ValueError):\n" +
+        "    sys.exit(1)\n"
     // ---------------------------------------------------------------- config
     // Config-only options. `transitionSeconds` is the deceleration length; the
     // login flourish plays the footage for a beat and then decelerates to a stop.
@@ -123,6 +160,7 @@ Item {
     }) // { "HDMI-A-1": 12345 } frozen frame positions
     property int frozenPosition: 0 // ms; where the default clip froze
     property bool _stateLoaded: false
+    property bool _stateStreamDone: false // state.json stream finished (guards the read fallback)
     property string _seedSig: ""
     // Runtime display state.
     property bool wallpaperFrozen: true
@@ -134,6 +172,7 @@ Item {
     property bool flourishActive: false
     property bool decelActive: false
     property bool locked: false
+    property bool wallpaperFollowingLock: false // wallpaper tracks the lock screen (Sonoma continuity)
     property bool screensaverEnabled: true // OmaLive's own screensaver toggle
     property bool screensaverOffFlag: false // omarchy's screensaver-off indicator
     property bool stayAwake: false // omarchy stay-awake indicator
@@ -216,6 +255,26 @@ Item {
 
     function toFileUrl(p) {
         return Model.toFileUrl(p, root.home);
+    }
+
+    // Byte length of the UTF-8 encoding of a string, for sizing the state
+    // payload handed to the python writer over stdin.
+    function utf8ByteLength(s) {
+        var str = String(s || "");
+        var len = 0;
+        for (var i = 0; i < str.length; i++) {
+            var c = str.charCodeAt(i);
+            if (c < 0x80)
+                len += 1;
+            else if (c < 0x800)
+                len += 2;
+            else if (c >= 0xD800 && c <= 0xDBFF) {
+                len += 4;
+                i++;
+            } else
+                len += 3;
+        }
+        return len;
     }
 
     // ------------------------------------------------------- surface registry
@@ -389,7 +448,7 @@ Item {
             "screenPositions": root.screenPositions || ({
             }),
             "frozenPosition": root.frozenPosition,
-            "transitionSeconds": root.transitionMs / 1000,
+            "transitionSeconds": root.effectiveTransitionMs / 1000,
             "pauseOnFullscreen": root.pauseOnFullscreen,
             "liveWallpaper": root.liveWallpaper,
             "shuffle": root.shuffle,
@@ -503,7 +562,8 @@ Item {
             root._pendingState = payload;
             return ;
         }
-        stateWriteProc.command = root.timeoutPrefix.concat(["bash", "-c", 'd=$(dirname -- "$1"); mkdir -p -- "$d" || exit 1; ' + '[ -L "$1" ] && exit 1; ' + 't=$(mktemp -- "$1.XXXXXX") || exit 1; ' + 'printf %s "$2" > "$t" || { rm -f -- "$t"; exit 1; }; ' + '[ -f "$t" ] && [ ! -L "$t" ] || { rm -f -- "$t"; exit 1; }; ' + 'mv -f -- "$t" "$1" || { rm -f -- "$t"; exit 1; }; ' + '[ -f "$1" ] && [ ! -L "$1" ] || exit 1', "_", root.statePath, payload]);
+        stateWriteProc.command = root.timeoutPrefix.concat(["python3", "-c", root.stateWriteScript, root.statePath, String(root.utf8ByteLength(payload))]);
+        stateWriteProc.payload = payload;
         stateWriteProc.running = true;
     }
 
@@ -593,6 +653,17 @@ Item {
         root.stopDecel();
         if (!root.screensaverActive)
             return ;
+
+        if (root.wallpaperFollowingLock) {
+            // The wallpaper is already tracking the lock; just drop the
+            // screensaver overlay without re-parking the frozen frame.
+            root.screensaverActive = false;
+            root.wallpaperVisible = true;
+            root.showCursor();
+            screensaverGraceTimer.stop();
+            console.log("omalive: screensaver force-exit (following lock)");
+            return;
+        }
 
         root.captureFrozenFrames();
         root.screensaverActive = false;
@@ -732,6 +803,21 @@ Item {
         root._decelTarget = target;
         root._decelProgress = 0;
         root.decelActive = true;
+        // The screensaver exit hands the frozen frame to the wallpaper. Seed
+        // the wallpaper at the screensaver's current position and glide both
+        // together, so when the overlay fades out the wallpaper is already
+        // parked on the exact frame — no post-hoc seek + visible snap.
+        if (target === "screensaver") {
+            var wl = root.wallpaperSurfaces;
+            for (var i = 0; i < wl.length; i++) {
+                var pos = root.surfacePosition(root.screensaverSurfaces, wl[i].monName);
+                if (pos < 0)
+                    pos = wl[i].position();
+
+                wl[i].setRate(1);
+                wl[i].playFrom(pos);
+            }
+        }
         decelTimer.interval = 30;
         decelTimer.restart();
     }
@@ -744,9 +830,15 @@ Item {
     function decelTick() {
         root._decelProgress += 30 / Math.max(300, root.effectiveTransitionMs);
         var t = Math.min(1, root._decelProgress);
-        var rate = Model.decelRate(t); // ease-out: starts fast, glides to a stop
+        var rate = Model.decelRate(t); // rate stays high most of the glide so the video doesn't turn into a slideshow
         var i = 0, list = root._decelTarget === "screensaver" ? root.screensaverSurfaces : root.wallpaperSurfaces;
         for (; i < list.length; i++) list[i].setRate(rate)
+        // Mirror the screensaver's glide onto the wallpaper so the handoff in
+        // finishScreensaverExit lands on the exact final frame.
+        if (root._decelTarget === "screensaver") {
+            var wl = root.wallpaperSurfaces;
+            for (i = 0; i < wl.length; i++) wl[i].setRate(rate)
+        }
         if (t >= 1) {
             decelTimer.stop();
             root.decelActive = false;
@@ -775,6 +867,16 @@ Item {
 
     function applyLockState(state) {
         var isLocked = state === "locked";
+        // A follow was requested but the lock is gone (released without a
+        // handoff, or never engaged): stop drifting and park / flourish.
+        if (root.wallpaperFollowingLock && !isLocked) {
+            root.wallpaperFollowingLock = false;
+            root.locked = false;
+            if (root.flourishOnLogin)
+                root.startWallpaperFlourish();
+            else
+                root.parkWallpaperAt(root.screenPositions);
+        }
         if (isLocked === root.locked)
             return ;
 
@@ -990,6 +1092,7 @@ Item {
         root.enabled = false;
         root.manualPaused = false;
         root.screensaverActive = false;
+        root.wallpaperFollowingLock = false;
         root.wallpaperFrozen = true;
         root.stopFlourish();
         root.stopDecel();
@@ -1059,11 +1162,13 @@ Item {
     }
 
     // ------------------------------------------------------- lock handoff
-    // Called by the OmaLive lock screen the moment the session unlocks: the
-    // lock surfaces played the aerial while locked, so park the wallpaper on
-    // the exact frames the user last saw (Sonoma continuity). The unlock poll
-    // then runs the login flourish from there.
-    function applyLockHandoff(txt) {
+    // Called by the OmaLive lock screen the moment a lock engages (before the
+    // session lock is confirmed): the wallpaper starts playing the aerial in
+    // lockstep with the lock surface, so unlocking later is a seamless
+    // continuation instead of a cold seek. Each surface is seeded to where the
+    // lock starts; the small drift between the two decoders is corrected on
+    // unlock via applyLockHandoff.
+    function startWallpaperFollow(txt) {
         var t = String(txt || "").trim();
         if (!t || t.length > root.maxStateBytes)
             return "bad-payload";
@@ -1082,11 +1187,118 @@ Item {
             root.frozenPosition = first;
 
         root.screenPositions = positions;
+        root.wallpaperFollowingLock = true;
+        root.wallpaperFrozen = false;
+        root.wallpaperVisible = true;
+        root.manualPaused = false;
+        root.stopFlourish();
+        root.stopDecel();
+        var i = 0, ws = root.wallpaperSurfaces;
+        for (; i < ws.length; i++) {
+            ws[i].setRate(1);
+            ws[i].playFrom(root.frozenPositionFor(ws[i].monName));
+        }
+        root.persistState();
+        return "ok";
+    }
+
+    // Called by the OmaLive lock screen the moment the session unlocks: the
+    // lock surfaces played the aerial while locked, so continue the footage
+    // on the wallpaper from the exact frames the user last saw (Sonoma
+    // continuity). This runs BEFORE the compositor releases the lock, so the
+    // wallpaper players' seek/startup latency is hidden underneath the
+    // still-visible lock video — when the lock lifts, the wallpaper is already
+    // in motion at the right frame and glides to a stop. No frozen wait for
+    // the 3s lock poll.
+    function applyLockHandoff(txt) {
+        var t = String(txt || "").trim();
+        if (!t || t.length > root.maxStateBytes)
+            return "bad-payload";
+
+        var positions;
+        try {
+            positions = root.normalizeScreenPositions(JSON.parse(t));
+        } catch (e) {
+            return "bad-payload";
+        }
+        if (Object.keys(positions).length === 0)
+            return "empty";
+
+        var wasLocked = root.locked;
+        var wasFollowing = root.wallpaperFollowingLock;
+        var first = Model.defaultPositionFrom(positions, -1);
+        if (first >= 0)
+            root.frozenPosition = first;
+
+        root.screenPositions = positions;
+        // The lock is releasing; align state now so the poll becomes a no-op
+        // and the flourish can run immediately instead of waiting for it.
+        root.locked = false;
+        root.wallpaperFollowingLock = false;
+        if (root.flourishOnLogin) {
+            if (wasFollowing) {
+                // The wallpaper already tracked the lock; correct the small
+                // drift (wrap-aware) and glide to a stop — no cold seek, so
+                // the footage continues seamlessly.
+                root.correctWallpaperDrift(positions);
+                root.continueWallpaperFlourish();
+            } else if (wasLocked) {
+                root.startWallpaperFlourish();
+            } else {
+                root.parkWallpaperAt(positions);
+            }
+        } else {
+            root.parkWallpaperAt(positions);
+        }
+        root.persistState();
+        return "ok";
+    }
+
+    // Align the following wallpaper to the exact frames the lock last showed,
+    // seeking only the small drift between the two decoders (wrap-aware across
+    // the loop seam). Seeks are near-instant on the optimized clips.
+    function correctWallpaperDrift(positions) {
+        var i = 0, ws = root.wallpaperSurfaces;
+        for (; i < ws.length; i++) {
+            var want = root.frozenPositionFor(ws[i].monName);
+            var have = ws[i].position();
+            var target = Model.correctedSeek(have, want, ws[i].duration());
+            var delta = Math.abs(target - have);
+            if (delta > 120)
+                ws[i].seekTo(target);
+
+            ws[i].setRate(1);
+        }
+    }
+
+    // Park every wallpaper surface on the given frozen frames (used when the
+    // lock released without a flourish).
+    function parkWallpaperAt(positions) {
         var i = 0, ws = root.wallpaperSurfaces;
         for (; i < ws.length; i++) ws[i].freezeAt(root.frozenPositionFor(ws[i].monName));
         root.wallpaperFrozen = true;
-        root.persistState();
-        return "ok";
+    }
+
+    // The wallpaper is already moving (it tracked the lock); just arm the
+    // glide-to-stop so the footage decelerates from where it is — no cold
+    // seek, so the unlock is a seamless continuation.
+    function continueWallpaperFlourish() {
+        if (!root.rendering)
+            return ;
+
+        root.stopDecel();
+        root.stopFlourish();
+        root.wallpaperFrozen = false;
+        root.wallpaperVisible = true;
+        root.manualPaused = false;
+        root.flourishActive = true;
+        var i = 0, ws = root.wallpaperSurfaces;
+        for (; i < ws.length; i++) {
+            ws[i].setRate(1);
+            ws[i].play();
+        }
+        flourishTimer.interval = Math.max(300, Math.floor(root.effectiveTransitionMs * 0.4));
+        flourishTimer.restart();
     }
 
     function setTransitionSeconds(v) {
@@ -1175,11 +1387,16 @@ Item {
     Process {
         id: stateReadProc
 
-        command: root.timeoutPrefix.concat(["python3", "-c", root.stateReadScript, "_", root.statePath, String(root.maxStateBytes)])
-        onExited: stateReadFallback.restart()
+        command: root.timeoutPrefix.concat(["python3", "-c", root.stateReadScript, root.statePath, String(root.maxStateBytes)])
+        // Only arm the fallback if the state read produced no output. Without
+        // the guard, a 250ms fallback firing first (onExited can beat
+        // onStreamFinished) would apply empty state and overwrite the good
+        // state.json with it.
+        onExited: if (!root._stateStreamDone) stateReadFallback.restart()
 
         stdout: StdioCollector {
             onStreamFinished: {
+                root._stateStreamDone = true;
                 stateReadFallback.stop();
                 root.finishStateLoad(text);
             }
@@ -1191,12 +1408,21 @@ Item {
         id: stateReadFallback
 
         interval: 250
-        onTriggered: root.finishStateLoad("")
+        onTriggered: {
+            root._stateStreamDone = true;
+            root.finishStateLoad("");
+        }
     }
 
     Process {
         id: stateWriteProc
 
+        property string payload: ""
+        stdinEnabled: true
+        onStarted: {
+            write(stateWriteProc.payload);
+            stateWriteProc.payload = "";
+        }
         onExited: {
             if (root._pendingState !== "") {
                 var q = root._pendingState;
@@ -1210,7 +1436,10 @@ Item {
         id: mkStateDir
 
         command: root.timeoutPrefix.concat(["mkdir", "-p", root.stateDir])
-        onExited: stateReadProc.running = true
+        onExited: {
+            root._stateStreamDone = false;
+            stateReadProc.running = true;
+        }
     }
 
     // Belt-and-braces: if surfaces never become ready (no clip assigned), don't
@@ -1478,7 +1707,7 @@ Item {
             playRequest: root.wallpaperPlayRequest
             rate: root.liveWallpaper ? root.liveRate : 1
             opacityVisible: root.wallpaperVisible
-            blocked: root.pauseOnFullscreen && (root.fullscreenMonitors[String(modelData.name)] === true)
+            blocked: root.pauseOnFullscreen && !root.wallpaperFollowingLock && (root.fullscreenMonitors[String(modelData.name)] === true)
         }
 
     }
@@ -1558,6 +1787,10 @@ Item {
 
         function lockHandoff(payload : string) : string {
             return root.applyLockHandoff(payload);
+        }
+
+        function followLock(payload : string) : string {
+            return root.startWallpaperFollow(payload);
         }
 
         function screensaver(arg: string) : string {

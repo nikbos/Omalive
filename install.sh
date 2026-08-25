@@ -14,8 +14,12 @@
 #                                                      ttfx screensaver so
 #                                                      OmaLive owns idle
 #
-# If you only want the plugin, skip this script entirely:
-#   omarchy plugin add <url> --enable
+# If you only want the plugin, skip this script entirely. `omarchy plugin add`
+# executes plugin code unsandboxed, so add it from a reviewed, pinned local
+# checkout — never from a moving remote URL:
+#   git clone https://github.com/nikbos/Omalive ~/Projects/omalive/OmaLive
+#   git -C ~/Projects/omalive/OmaLive checkout <full-commit-sha>
+#   omarchy plugin add ~/Projects/omalive/OmaLive --enable
 #
 # Dependencies: qt6-multimedia (video decode), jq, python3, hyprland.
 # The shell plugin does the rendering, idle detection, transition and state
@@ -232,7 +236,7 @@ mkdir -p "$(dirname "$MENU_EXT")"
 python3 - "$MENU_EXT" <<'PY'
 import sys, os
 p = sys.argv[1]
-override = '  "system.screensaver": { "action": "omarchy-shell omalive screensaver start" },'
+override = '  "system.screensaver": { "icon": "󱄄", "label": "Screensaver", "action": "omarchy-shell omalive screensaver start" },'
 if os.path.exists(p):
     s = open(p).read()
     if '"system.screensaver"' in s:

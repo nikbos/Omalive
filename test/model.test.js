@@ -107,8 +107,8 @@ test("defaultPositionFrom picks the first usable position, else fallback", () =>
 test("decelRate eases 1 -> 0 with the Sonoma curve", () => {
   assert.strictEqual(M.decelRate(0), 1);
   assert.strictEqual(M.decelRate(1), 0);
-  assert.ok(Math.abs(M.decelRate(0.5) - 0.125) < 1e-9); // (1-0.5)^3
-  assert.ok(Math.abs(M.decelRate(0.25) - Math.pow(0.75, 3)) < 1e-9);
+  assert.ok(Math.abs(M.decelRate(0.5) - Math.sqrt(0.5)) < 1e-9);
+  assert.ok(Math.abs(M.decelRate(0.25) - Math.sqrt(0.75)) < 1e-9);
   assert.strictEqual(M.decelRate(-1), 1);
   assert.strictEqual(M.decelRate(2), 0);
 });
@@ -118,6 +118,25 @@ test("transitionMs converts seconds to ms and clamps", () => {
   assert.strictEqual(M.transitionMs(0, 2, 1, 10), 1000);
   assert.strictEqual(M.transitionMs(20, 2, 1, 10), 10000);
   assert.strictEqual(M.transitionMs(undefined, 2, 1, 10), 2000);
+});
+
+test("correctedSeek picks the closest in-sync target across the loop seam", () => {
+  const d = 26100;
+  // In sync: plain forward/back seek.
+  assert.strictEqual(M.correctedSeek(23000, 23500, d), 23500);
+  assert.strictEqual(M.correctedSeek(23000, 22500, d), 22500);
+  assert.strictEqual(M.correctedSeek(5000, 5000, d), 5000);
+  // Lock looped to near the start while the wallpaper is still near the end:
+  // seek forward across the seam, not backward through the whole clip.
+  assert.strictEqual(M.correctedSeek(25000, 2000, d), 2000);
+  // Wallpaper near the start, lock near the end: seek backward across the seam.
+  assert.strictEqual(M.correctedSeek(2000, 25000, d), 25000);
+  // No/zero duration: pass the target through.
+  assert.strictEqual(M.correctedSeek(2000, 7000, 0), 7000);
+  assert.strictEqual(M.correctedSeek(2000, 7000, NaN), 7000);
+  // Out-of-range targets are wrapped into [0, duration).
+  assert.strictEqual(M.correctedSeek(1000, 27000, 26100), 900);
+  assert.strictEqual(M.correctedSeek(1000, 900, 26100), 900);
 });
 
 test("stateWord picks the right human state", () => {

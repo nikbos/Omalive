@@ -107,16 +107,38 @@ function defaultPositionFrom(positions, fallback) {
   return fallback;
 }
 
-// Ease-out deceleration curve for the Sonoma "glide to a stop": rate starts at
-// 1 and reaches 0 at t=1, decelerating smoothly.
+// Deceleration curve for the Sonoma "glide to a stop": rate starts at 1 and
+// reaches 0 at t=1. A sqrt eases down slower than a cubic — a cubic sits below
+// ~15fps for most of the transition, which QtMultimedia renders as a choppy
+// slideshow; sqrt keeps the rate high (≥20fps) until the very end, so the
+// glide looks smooth and only stops at the last moment.
 function decelRate(t) {
   var p = Math.min(1, Math.max(0, t));
-  return Math.pow(1 - p, 3);
+  return Math.sqrt(1 - p);
 }
 
 // Duration of the transition in ms from a config value in seconds.
 function transitionMs(seconds, fallbackSeconds, lo, hi) {
   return clampInt(seconds, lo, hi, fallbackSeconds) * 1000;
+}
+
+// The seek target that lands the player closest to `target`, accounting for the
+// looping timeline: when two players drift apart across the loop seam (one at
+// 25s, the other just wrapped to 2s), a plain `target - current` delta would
+// seek the wrong way. Returns a position in [0, duration) reached with the
+// smallest circular step. With no (or invalid) duration the target passes
+// through unchanged.
+function correctedSeek(current, target, duration) {
+  var d = Number(duration);
+  if (!isFinite(d) || d <= 0) return Number(target);
+  var cur = Number(current) % d;
+  var tgt = Number(target) % d;
+  if (tgt < 0) tgt += d;
+  if (cur < 0) cur += d;
+  var delta = tgt - cur;
+  while (delta > d / 2) delta -= d;
+  while (delta <= -d / 2) delta += d;
+  return ((cur + delta) % d + d) % d;
 }
 
 // A single human-readable state word from a status object.
@@ -150,6 +172,7 @@ if (typeof module !== "undefined") {
     defaultPositionFrom: defaultPositionFrom,
     decelRate: decelRate,
     transitionMs: transitionMs,
+    correctedSeek: correctedSeek,
     stateWord: stateWord
   };
 }

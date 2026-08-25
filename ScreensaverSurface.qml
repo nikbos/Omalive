@@ -104,7 +104,18 @@ PanelWindow {
     WlrLayershell.layer: WlrLayer.Overlay
     WlrLayershell.keyboardFocus: surface.active ? WlrKeyboardFocus.Exclusive : WlrKeyboardFocus.None
     exclusionMode: ExclusionMode.Ignore
-    onClipUrlChanged: sync()
+    onClipUrlChanged: {
+        // Warm the player as soon as a clip is configured so the first
+        // screensaver entry is a fast seek+play, not a cold load (which would
+        // hold a black surface for a beat). Mirrors the wallpaper surface.
+        if (clipUrl === "") {
+            player.stop();
+            player.source = "";
+        } else {
+            player.source = clipUrl;
+        }
+        sync();
+    }
     onActiveChanged: {
         sync();
         surface.primed = false;
