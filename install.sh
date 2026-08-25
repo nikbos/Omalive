@@ -232,32 +232,78 @@ install_lock_plugin
 # The stock row runs `omarchy-launch-screensaver force`, which bypasses the
 # screensaver-off toggle. Override it per-key so the menu starts the OmaLive
 # aerial screensaver instead. Idempotent: never touches the row once present.
+# Reads and writes are descriptor-bound: the existing file is read through an
+# O_NOFOLLOW descriptor (refusing a symlink), and the new content is written to
+# a fresh temp file and atomically renamed over the target — a pre-existing
+# symlink is replaced, never written through.
 MENU_EXT="$HOME/.config/omarchy/extensions/omarchy-menu.jsonc"
 mkdir -p "$(dirname "$MENU_EXT")"
 python3 - "$MENU_EXT" <<'PY'
-import sys, os
+import sys, os, stat, tempfile
 p = sys.argv[1]
 override = '  "system.screensaver": { "icon": "󱄄", "label": "Screensaver", "action": "omarchy-shell omalive screensaver start" },'
-if os.path.exists(p):
-    s = open(p).read()
-    if '"system.screensaver"' in s:
-        print("✓ Menu Screensaver row already overridden")
-        sys.exit(0)
-    idx = s.rstrip().rfind('}')
-    if idx < 0:
-        s = s.rstrip() + '\n' + override[:-1] + '\n}\n'
+
+def read_refusing_symlink(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_size > 1048576:
+            raise OSError("refusing non-regular, foreign, or oversized menu file")
+        return os.read(fd, 1048576).decode("utf-8", "replace")
+    finally:
+        os.close(fd)
+
+def write_atomic(path, s):
+    d = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(prefix=os.path.basename(path) + ".", dir=d)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(s)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+try:
+    if os.path.lexists(p):
+        s = read_refusing_symlink(p)
+        if '"system.screensaver"' in s:
+            print("✓ Menu Screensaver row already overridden")
+            sys.exit(0)
+        idx = s.rstrip().rfind("}")
+        if idx < 0:
+            s = s.rstrip() + "\n" + override[:-1] + "\n}\n"
+        else:
+            s = s[:idx] + override + "\n" + s[idx:]
     else:
-        s = s[:idx] + override + '\n' + s[idx:]
-else:
-    s = '{\n  // OmaLive: the System > Screensaver row launches the aerial screensaver.\n' + override + '\n}\n'
-open(p, 'w').write(s)
-print("✓ Overrode the menu Screensaver row to start OmaLive")
+        s = '{\n  // OmaLive: the System > Screensaver row launches the aerial screensaver.\n' + override + '\n}\n'
+    write_atomic(p, s)
+    print("✓ Overrode the menu Screensaver row to start OmaLive")
+except OSError as e:
+    print("✗ Could not update the menu extension:", e)
+    sys.exit(1)
 PY
 
 # ----- install the CLI + fetch/optimize helpers -------------------------------
-install -D -m 755 "$CLI_SRC" "$HOME/.local/bin/omalive"
-install -D -m 755 "$FETCH_SRC" "$HOME/.local/bin/omalive-fetch"
-install -D -m 755 "$SCRIPT_DIR/optimize.sh" "$HOME/.local/bin/omalive-optimize"
+# Each helper is installed to a fresh temp file and then renamed into place, so
+# a pre-existing symlink at the final path is replaced, never written through.
+install_helper() {
+  local src="$1" dest="$2" dir tmp
+  dir="$(dirname "$dest")"
+  mkdir -p -- "$dir"
+  tmp="$(mktemp "$dir/.omalive-install.XXXXXX")" || { echo "could not stage $dest" >&2; return 1; }
+  install -m 755 "$src" "$tmp" && mv -f "$tmp" "$dest" && return 0
+  rm -f -- "$tmp"
+  return 1
+}
+install_helper "$CLI_SRC" "$HOME/.local/bin/omalive"
+install_helper "$FETCH_SRC" "$HOME/.local/bin/omalive-fetch"
+install_helper "$SCRIPT_DIR/optimize.sh" "$HOME/.local/bin/omalive-optimize"
 echo "✓ CLI installed to ~/.local/bin/omalive"
 
 # ----- load the plugin now ----------------------------------------------------
@@ -290,7 +336,8 @@ Optional keybind — Omarchy 4 keeps user binds in ~/.config/hypr/bindings.lua:
   o.bind("SUPER + ALT + V", "OmaLive panel", "omarchy-shell shell toggle omalive")
 
 Updating later:  omarchy plugin update $PLUGIN_ID
-Removing:        omarchy plugin remove $PLUGIN_ID
+Removing:        run ~/Projects/omalive/OmaLive/uninstall.sh (removes helpers,
+                 restores the stock screensaver/menu, and removes both plugins)
 
 Logs: ~/.cache/omalive.log
 EOF

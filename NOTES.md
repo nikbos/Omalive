@@ -157,6 +157,12 @@ Two repositories, one plugin each (the marketplace rule):
   `omalive-fetch`, sets the `screensaver-off` toggle, installs/enables the
   lock-screen plugin from a reviewed local checkout of `nikbos/OmaLiveLock`
   (skipped, with instructions, if none is present), and restarts the shell.
+  `uninstall.sh` reverses all of it: it removes the CLI helpers, the
+  `screensaver-off` / `omalive-screensaver-off` toggles, the menu
+  Screensaver-row override, and the state dir, then removes both plugins
+  (restoring the stock lock) and restarts the shell. `omarchy plugin remove`
+  alone does NOT clean those extras up, so the README's Removal instructions
+  point at `uninstall.sh`.
 - **Hard rule: never write into `~/.config/omarchy/plugins/` while the session
   is locked.** The shell watches that directory with inotify, and *any* file
   change reloads ALL plugin services — including the lock screen holding the

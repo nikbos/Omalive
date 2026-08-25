@@ -41,10 +41,30 @@ CRF=24
 GOP=60         # keyframe interval in frames (60 = every 1s at 60fps)
 LOG_DIR="${XDG_CACHE_HOME:-$HOME/.cache}"
 LOG_FILE="$LOG_DIR/omalive.log"
+# A symlinked or non-regular log path must never be followed; drop to /dev/null.
+if [ -L "$LOG_FILE" ] || { [ -e "$LOG_FILE" ] && [ ! -f "$LOG_FILE" ]; }; then
+  LOG_FILE=/dev/null
+fi
 mkdir -p "$LOG_DIR"
 
-err() { echo "omalive-optimize: $*" >&2; }
+# Output ceiling for the transcoded .opt.mp4 (default 2 GiB, hard 4 GiB ceiling)
+# and an encode deadline so a stuck transcode cannot hang forever.
+DEFAULT_OUT_CAP_BYTES=$(( 2 * 1024 * 1024 * 1024 ))
+HARD_OUT_CAP_BYTES=$(( 4 * 1024 * 1024 * 1024 ))
+out_raw="${OMALIVE_MAX_OUTPUT:-2G}"
+out_bytes="$(numfmt --from=iec "${out_raw}" 2>/dev/null \
+  || numfmt --from=auto "${out_raw}" 2>/dev/null \
+  || printf '%s' '')"
+if [[ ! "${out_bytes}" =~ ^[0-9]+$ ]]; then
+  out_bytes="${DEFAULT_OUT_CAP_BYTES}"
+fi
+if (( out_bytes > HARD_OUT_CAP_BYTES )); then
+  out_bytes="${HARD_OUT_CAP_BYTES}"
+fi
+MAX_OUTPUT_BYTES="${out_bytes}"
+TRANSCODE_TIME="${OMALIVE_TRANSCODE_TIME:-1800}"
 
+err() { echo "omalive-optimize: $*" >&2; }
 log() { printf '%s\n' "$*" >> "$LOG_FILE"; }
 
 command -v ffmpeg  >/dev/null 2>&1 || { err "ffmpeg is required."; exit 1; }
@@ -52,10 +72,16 @@ command -v ffprobe >/dev/null 2>&1 || { err "ffprobe is required."; exit 1; }
 
 transcode() {
   local src="$1" out="$2" dur="$3"
-  local mid_end
+  local mid_end tmpdir staged
   mid_end="$(awk -v d="$dur" -v x="$X" 'BEGIN { printf "%.4f", d - x }')"
+  # Same-filesystem private staging so the final `mv` is a rename that replaces
+  # any pre-existing symlink instead of following it, and the encode output is
+  # validated (regular, under the cap) before it ever touches the final path.
+  tmpdir="$(mktemp -d "$(dirname "$out")/.omalive-opt.XXXXXX")" || return 1
+  staged="$tmpdir/out.mp4"
+
   # Tier 1: 60fps interpolation + baked seam crossfade.
-  ffmpeg -y -hide_banner -loglevel error -i "$src" -filter_complex "
+  if ffmpeg -y -hide_banner -timelimit "$TRANSCODE_TIME" -loglevel error -i "$src" -filter_complex "
 [0:v]framerate=fps=${FPS}[m];
 [m]split=3[a][b][c];
 [a]trim=duration=${X},setpts=PTS-STARTPTS[head];
@@ -63,13 +89,40 @@ transcode() {
 [c]trim=start=${mid_end},setpts=PTS-STARTPTS[tail];
 [tail][head]xfade=transition=fade:duration=${X}:offset=0[xf];
 [mid][xf]concat=n=2:v=1:a=0[out]
-" -map "[out]" -c:v libx264 -preset medium -crf "$CRF" -g "$GOP" -keyint_min "$GOP" -sc_threshold 0 -an -movflags +faststart "$out.tmp.mp4" \
-    && return 0
+" -map "[out]" -c:v libx264 -preset medium -crf "$CRF" -g "$GOP" -keyint_min "$GOP" -sc_threshold 0 -an -movflags +faststart "$staged"; then
+    if install_staged "$staged" "$out" "$tmpdir"; then
+      return 0
+    fi
+    return 1
+  fi
   # Tier 2 (xfade unavailable/errored): 60fps only; the loop seam stays a cut.
   err "seam crossfade failed for $src — falling back to interpolation only"
-  rm -f "$out.tmp.mp4"
-  ffmpeg -y -hide_banner -loglevel error -i "$src" -vf "framerate=fps=${FPS}" \
-      -c:v libx264 -preset medium -crf "$CRF" -g "$GOP" -keyint_min "$GOP" -sc_threshold 0 -an -movflags +faststart "$out.tmp.mp4"
+  rm -f "$staged"
+  if ffmpeg -y -hide_banner -timelimit "$TRANSCODE_TIME" -loglevel error -i "$src" -vf "framerate=fps=${FPS}" \
+      -c:v libx264 -preset medium -crf "$CRF" -g "$GOP" -keyint_min "$GOP" -sc_threshold 0 -an -movflags +faststart "$staged"; then
+    if install_staged "$staged" "$out" "$tmpdir"; then
+      return 0
+    fi
+    return 1
+  fi
+  rm -rf "$tmpdir"
+  return 1
+}
+
+# Validate a freshly transcoded file (regular, not a symlink, under the output
+# cap) and atomically move it into place; the rename replaces a pre-existing
+# symlink at the destination rather than following it.
+install_staged() {
+  local staged="$1" out="$2" tmpdir="$3"
+  if [ -f "$staged" ] && [ ! -L "$staged" ] &&
+     [ "$(stat -c %s "$staged" 2>/dev/null || echo 0)" -le "$MAX_OUTPUT_BYTES" ]; then
+    mv -f "$staged" "$out" || { rm -rf "$tmpdir"; return 1; }
+    rm -rf "$tmpdir"
+    return 0
+  fi
+  err "refusing out-of-range or non-regular transcode output (over ${MAX_OUTPUT_BYTES} bytes)"
+  rm -rf "$tmpdir"
+  return 1
 }
 
 optimize_one() {
@@ -91,12 +144,10 @@ optimize_one() {
   fi
   echo "  → $f -> $out ($(awk -v d="$dur" 'BEGIN { printf "%.1fs", d }'), ${FPS}fps interpolated)"
   if transcode "$f" "$out" "$dur"; then
-    mv -f "$out.tmp.mp4" "$out"
     echo "  ✓ $out"
     log "optimized: $f -> $out"
   else
     err "transcode failed for $f — keeping the original in use"
-    rm -f "$out.tmp.mp4"
   fi
 }
 

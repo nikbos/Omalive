@@ -126,6 +126,41 @@ Item {
         "        sys.exit(1)\n" +
         "except (OSError, ValueError):\n" +
         "    sys.exit(1)\n"
+    // Descriptor-bound atomic install for a file (used for the lock frozen-frame
+    // PNG). The source is validated on an O_NOFOLLOW descriptor (regular file,
+    // our uid, under the byte cap), moved over the destination with os.replace
+    // (rename replaces any pre-existing symlink at the destination, it never
+    // writes through one), then the destination is re-opened O_NOFOLLOW and
+    // re-validated. Prints the destination on success; the source is cleaned up
+    // on any failure.
+    readonly property string atomicInstallScript:
+        "import os, stat, sys\n" +
+        "src = sys.argv[1]; dst = sys.argv[2]; cap = int(sys.argv[3])\n" +
+        "try:\n" +
+        "    sfd = os.open(src, os.O_RDONLY | os.O_NOFOLLOW)\n" +
+        "    try:\n" +
+        "        st = os.fstat(sfd)\n" +
+        "        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_size > cap:\n" +
+        "            os.unlink(src)\n" +
+        "            sys.exit(1)\n" +
+        "    finally:\n" +
+        "        os.close(sfd)\n" +
+        "    os.replace(src, dst)\n" +
+        "    vfd = os.open(dst, os.O_RDONLY | os.O_NOFOLLOW)\n" +
+        "    try:\n" +
+        "        vst = os.fstat(vfd)\n" +
+        "    finally:\n" +
+        "        os.close(vfd)\n" +
+        "    if not stat.S_ISREG(vst.st_mode) or vst.st_uid != os.getuid():\n" +
+        "        os.unlink(dst)\n" +
+        "        sys.exit(1)\n" +
+        "    sys.stdout.write(dst)\n" +
+        "except OSError:\n" +
+        "    try:\n" +
+        "        os.unlink(src)\n" +
+        "    except OSError:\n" +
+        "        pass\n" +
+        "    sys.exit(1)\n"
     // ---------------------------------------------------------------- config
     // Config-only options. `transitionSeconds` is the deceleration length; the
     // login flourish plays the footage for a beat and then decelerates to a stop.
@@ -167,6 +202,18 @@ Item {
     property int frozenPosition: 0 // ms; where the default clip froze
     property var lockFramePaths: ({
     }) // { "DP-1": "/…/lockframe-DP-1.png" } frozen-frame captures for the lock screen
+    // Byte cap for a captured lock-frame PNG (a 2560×1440 frame is ~6 MB; the
+    // cap is generous but bounded so a hostile capture can never exhaust disk).
+    readonly property int maxLockFrameBytes: 268435456
+    // Serialized atomic-install queue for lock-frame PNGs (one python helper at
+    // a time) plus a fire-and-forget temp-file cleanup queue.
+    property var _pendingAtomicInstalls: []
+    property var _atomicInstallJob: null
+    property int _atomicInstallSeq: 0
+    property string _pendingAtomicTemp: ""
+    property string _pendingAtomicFinal: ""
+    property var _pendingAtomicCb: null
+    property var _rmQueue: []
     property bool _stateLoaded: false
     property bool _stateStreamDone: false // state.json stream finished (guards the read fallback)
     property string _seedSig: ""
@@ -1414,17 +1461,88 @@ Item {
 
     // Run one surface grab and fold the result into the shared map (bound per
     // iteration — QML closures share the loop's `s`, so the surface is passed
-    // in as a parameter, never captured). Each completion publishes a fresh map
-    // so property-change notifications fire and the lock's frozenFrameUrl
-    // binding re-evaluates even if the grab lands after the lock surface maps.
+    // in as a parameter, never captured). The grab writes to a UNIQUE temp
+    // path, then a descriptor-bound python helper validates it and atomically
+    // renames it over the final predictable path — a pre-planted symlink at
+    // the final path is replaced, never written through. Each completion
+    // publishes a fresh map so property-change notifications fire and the
+    // lock's frozenFrameUrl binding re-evaluates even if the grab lands after
+    // the lock surface maps.
     function captureOneLockFrame(surface, name, path, out) {
-        surface.captureFrame(path, function(resultPath) {
-            out[name] = resultPath;
-            var m = ({
+        root._atomicInstallSeq += 1;
+        // saveToFile infers the format from the file extension, so the temp
+        // must keep a real .png suffix (it is unique, so no pre-planted
+        // symlink can target it).
+        var temp = path + "-" + root._atomicInstallSeq + "-" + Math.floor(Math.random() * 1000000) + ".png";
+        surface.captureFrame(temp, function(resultPath) {
+            if (resultPath === "") {
+                root.cleanupTemp(temp);
+                out[name] = "";
+                root.publishLockFrames(out);
+                return;
+            }
+            root.runAtomicInstall(temp, path, function(finalPath) {
+                root.cleanupTemp(temp);
+                out[name] = finalPath;
+                root.publishLockFrames(out);
             });
-            for (var k in out) m[k] = out[k];
-            root.lockFramePaths = m;
         });
+    }
+
+    function publishLockFrames(out) {
+        var m = ({
+        });
+        for (var k in out) m[k] = out[k];
+        root.lockFramePaths = m;
+    }
+
+    // Queue an atomic-install job (validate temp, os.replace over final) and
+    // run the queue one job at a time through a single python helper process.
+    // Each job is a plain [temp, final, cb] array. The parameters are stashed
+    // into properties first and the queue mutated from a parameterless helper
+    // (qmllint segfaults on parameters named temp/final/cb fed into arrays).
+    function runAtomicInstall(t0, f0, c0) {
+        root._pendingAtomicTemp = t0;
+        root._pendingAtomicFinal = f0;
+        root._pendingAtomicCb = c0;
+        root.enqueueAtomicInstall();
+    }
+
+    function enqueueAtomicInstall() {
+        var job = [];
+        job.push(root._pendingAtomicTemp);
+        job.push(root._pendingAtomicFinal);
+        job.push(root._pendingAtomicCb);
+        root._pendingAtomicInstalls.push(job);
+        root.pumpAtomicInstalls();
+    }
+
+    function pumpAtomicInstalls() {
+        if (atomicInstallProc.running || root._pendingAtomicInstalls.length === 0)
+            return;
+
+        var job = root._pendingAtomicInstalls[0];
+        root._atomicInstallJob = job;
+        atomicInstallProc.command = root.timeoutPrefix.concat(["python3", "-c", root.atomicInstallScript, job[0], job[1], String(root.maxLockFrameBytes)]);
+        atomicInstallProc.running = true;
+    }
+
+    // Best-effort removal of a temp file (no-op once it was renamed over the
+    // final path). Queued so bursts of failed grabs still drain their temps.
+    function cleanupTemp(p) {
+        if (!p)
+            return;
+
+        root._rmQueue.push(p);
+        root.pumpRm();
+    }
+
+    function pumpRm() {
+        if (rmTempProc.running || root._rmQueue.length === 0)
+            return;
+
+        rmTempProc.command = ["rm", "-f", "--"].concat(root._rmQueue.shift());
+        rmTempProc.running = true;
     }
 
     function setTransitionSeconds(v) {
@@ -1556,6 +1674,36 @@ Item {
                 root.writeState(q);
             }
         }
+    }
+
+    // Descriptor-bound atomic install of a lock-frame PNG (see
+    // atomicInstallScript / runAtomicInstall). One job at a time; stdout carries
+    // the final path on success.
+    Process {
+        id: atomicInstallProc
+
+        stdout: StdioCollector {
+            onStreamFinished: {
+                var p = String(text || "").trim();
+                var job = root._atomicInstallJob;
+                var cb = job ? job[2] : null;
+                if (cb)
+                    cb(p === job[1] ? p : "");
+            }
+        }
+        onExited: {
+            root._atomicInstallJob = null;
+            if (root._pendingAtomicInstalls.length > 0)
+                root._pendingAtomicInstalls.shift();
+            root.pumpAtomicInstalls();
+        }
+    }
+
+    // Fire-and-forget removal of failed-capture temp files (queued).
+    Process {
+        id: rmTempProc
+
+        onExited: root.pumpRm()
     }
 
     Process {
