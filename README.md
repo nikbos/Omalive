@@ -120,7 +120,9 @@ All options live in `~/.config/omarchy/shell.json` under a `plugins[]` entry
   "pauseOnFullscreen": true,
   "liveWallpaper": false,
   "shuffle": true,
-  "flourishOnLogin": true }
+  "flourishOnLogin": true,
+  "stopDelaySeconds": 2,
+  "glideToStop": false }
 ```
 
 Runtime changes from the panel/CLI persist to `~/.local/state/omalive/state.json`

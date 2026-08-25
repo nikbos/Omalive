@@ -56,10 +56,13 @@ Motion-Wallpaper reference has the A/B pattern if that ever matters.
 
 `decelTick` advances a 0→1 progress and sets `playbackRate = sqrt(1-t)` on the
 target surface set (a sqrt curve, not a cubic — a cubic sits under ~15fps for
-most of the glide, which QtMultimedia renders as a choppy slideshow). For the
-screensaver exit the wallpaper surfaces are seeded at the screensaver's
-position and glide at the same rate, so the overlay→desktop swap lands on the
-exact final frame with no visible seek. On completion the frozen frame is
+most of the glide, which QtMultimedia renders as a choppy slideshow). Stop
+transitions (screensaver dismissal, unlock/login flourish) default to playing
+the footage at normal speed for `stopDelaySeconds` (2) then freezing it in
+place — no slowdown. `glideToStop: true` restores the old deceleration instead.
+For the screensaver stop the wallpaper surfaces are seeded at the screensaver's
+position and play in step for the delay, so the overlay→desktop swap lands on
+the exact final frame with no visible seek. On completion the frozen frame is
 captured and parked.
 
 ## Live lock screen (OmaLiveLock)

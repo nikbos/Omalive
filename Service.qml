@@ -134,6 +134,12 @@ Item {
     property bool liveWallpaper: cfg("liveWallpaper", false) === true || String(cfg("liveWallpaper", "false")) === "true"
     property bool shuffle: cfg("shuffle", true) === true || String(cfg("shuffle", "true")) === "true"
     property bool flourishOnLogin: cfg("flourishOnLogin", true) === true || String(cfg("flourishOnLogin", "true")) === "true"
+    // Stop transitions (screensaver dismissal, unlock/login flourish):
+    // default plays the footage at normal speed for `stopDelaySeconds` then
+    // freezes it on the spot; `glideToStop: true` restores the old Sonoma
+    // deceleration over `transitionSeconds` instead.
+    property bool glideToStop: cfg("glideToStop", false) === true || String(cfg("glideToStop", "false")) === "true"
+    property int stopDelayMs: clampInt(cfg("stopDelaySeconds", 2), 0, 10, 2) * 1000
     property string videoDir: cfg("videoDir", "~/Videos/Aerial")
     // Slow drift speed for live-wallpaper mode; configurable via shell.json
     // liveRate (clamped 0.1–2.0, default 0.35).
@@ -638,13 +644,42 @@ Item {
         if (!root.screensaverActive)
             return ;
 
-        // The overlay grabs input now, so a moving mouse fires this repeatedly;
-        // once the deceleration is underway, let it run to completion.
-        if (root.decelActive && root._decelTarget === "screensaver")
-            return ;
-
         shuffleTimer.stop();
-        root.startDecel("screensaver");
+        if (root.glideToStop) {
+            // Glide to a stop first (the Sonoma deceleration). The overlay
+            // grabs input now, so a moving mouse fires this repeatedly; once
+            // the deceleration is underway, let it run to completion.
+            if (root.decelActive && root._decelTarget === "screensaver")
+                return ;
+
+            root.startDecel("screensaver");
+            return;
+        }
+        // Keep the footage playing at normal speed for stopDelayMs, then freeze
+        // and crossfade to the desktop — no slowdown before the swap.
+        if (root.decelActive && root._decelTarget === "screensaver")
+            root.stopDecel();
+
+        if (screensaverStopTimer.running)
+            return;
+
+        if (root.stopDelayMs > 0) {
+            // Keep the wallpaper in step with the screensaver while it plays
+            // out the delay, so the swap lands on the exact final frame.
+            var wl = root.wallpaperSurfaces;
+            for (var i = 0; i < wl.length; i++) {
+                var pos = root.surfacePosition(root.screensaverSurfaces, wl[i].monName);
+                if (pos < 0)
+                    pos = wl[i].position();
+
+                wl[i].setRate(1);
+                wl[i].playFrom(pos);
+            }
+            screensaverStopTimer.interval = root.stopDelayMs;
+            screensaverStopTimer.restart();
+        } else {
+            root.finishScreensaverExit();
+        }
     }
 
     // Called when the system locks over the screensaver: no decel, just yield.
@@ -739,7 +774,7 @@ Item {
             ws[i].setRate(1);
             ws[i].playFrom(root.frozenPositionFor(ws[i].monName));
         }
-        flourishTimer.interval = Math.max(300, Math.floor(root.effectiveTransitionMs * 0.4));
+        flourishTimer.interval = root.glideToStop ? Math.max(300, Math.floor(root.effectiveTransitionMs * 0.4)) : Math.max(300, root.stopDelayMs);
         flourishTimer.restart();
     }
 
@@ -1297,7 +1332,7 @@ Item {
             ws[i].setRate(1);
             ws[i].play();
         }
-        flourishTimer.interval = Math.max(300, Math.floor(root.effectiveTransitionMs * 0.4));
+        flourishTimer.interval = root.glideToStop ? Math.max(300, Math.floor(root.effectiveTransitionMs * 0.4)) : Math.max(300, root.stopDelayMs);
         flourishTimer.restart();
     }
 
@@ -1536,9 +1571,23 @@ Item {
 
         repeat: false
         onTriggered: {
-            if (root.flourishActive)
-                root.startDecel("wallpaper");
+            if (!root.flourishActive)
+                return;
 
+            if (root.glideToStop)
+                root.startDecel("wallpaper");
+            else
+                root.finishWallpaperFlourish();
+        }
+    }
+
+    Timer {
+        id: screensaverStopTimer
+
+        repeat: false
+        onTriggered: {
+            if (root.screensaverActive)
+                root.finishScreensaverExit();
         }
     }
 
