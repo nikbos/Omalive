@@ -36,7 +36,7 @@ the checked-out commit, so review the pinned commit first, then:
 
 ```bash
 git clone https://github.com/nikbos/Omalive ~/Projects/omalive/OmaLive
-git -C ~/Projects/omalive/OmaLive checkout 5eef4361766410deb61aea5230fc493634735a6d
+git -C ~/Projects/omalive/OmaLive checkout fcc7c43295036f02a40799370b19a8260c60df22
 ~/Projects/omalive/OmaLive/install.sh
 ```
 
@@ -52,7 +52,7 @@ checkout of the same reviewed commit:
 # review the pinned commit first, then add the local checkout (git clone of a
 # local dir copies exactly the checked-out commit — nothing newer)
 git clone https://github.com/nikbos/Omalive ~/Projects/omalive/OmaLive
-git -C ~/Projects/omalive/OmaLive checkout 5eef4361766410deb61aea5230fc493634735a6d
+git -C ~/Projects/omalive/OmaLive checkout fcc7c43295036f02a40799370b19a8260c60df22
 omarchy plugin add ~/Projects/omalive/OmaLive --enable
 omarchy restart shell
 ```
@@ -175,6 +175,28 @@ get the stock lock back:
 omarchy plugin disable omalive-lock   # restores the stock lock screen
 omarchy plugin enable omalive-lock    # back to the live aerial lock
 ```
+
+## Removal
+
+`install.sh` installs more than the shell plugins, so a bare
+`omarchy plugin remove omalive` leaves the CLI helpers, the stock-screensaver
+suppression and the menu override behind. Run `uninstall.sh` from the checkout
+instead — it removes everything `install.sh` installed:
+
+```bash
+# from the same reviewed checkout you installed from:
+git clone https://github.com/nikbos/Omalive ~/Projects/omalive/OmaLive
+git -C ~/Projects/omalive/OmaLive checkout fcc7c43295036f02a40799370b19a8260c60df22
+~/Projects/omalive/OmaLive/uninstall.sh
+```
+
+`uninstall.sh` deletes `~/.local/bin/omalive{,,-fetch,-optimize}`, removes the
+`screensaver-off` / `omalive-screensaver-off` toggles (restoring the stock ttfx
+screensaver), reverts the menu Screensaver-row override, removes
+`~/.local/state/omalive`, removes the `omalive-lock` and `omalive` plugins
+(restoring the stock lock), and restarts the shell. Use
+`uninstall.sh --files-only` to keep the plugins, or `--plugins-only` for just
+the plugin removal. It refuses while the session is locked.
 
 ## License
 
