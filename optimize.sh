@@ -62,6 +62,9 @@ if (( out_bytes > HARD_OUT_CAP_BYTES )); then
   out_bytes="${HARD_OUT_CAP_BYTES}"
 fi
 MAX_OUTPUT_BYTES="${out_bytes}"
+# Hard file-size bound for the encode (ulimit -f uses 512-byte blocks); the
+# post-encode check in install_staged stays as belt-and-braces.
+MAX_OUTPUT_BLOCKS=$(( (MAX_OUTPUT_BYTES + 1023) / 1024 ))
 TRANSCODE_TIME="${OMALIVE_TRANSCODE_TIME:-1800}"
 
 err() { echo "omalive-optimize: $*" >&2; }
@@ -80,8 +83,12 @@ transcode() {
   tmpdir="$(mktemp -d "$(dirname "$out")/.omalive-opt.XXXXXX")" || return 1
   staged="$tmpdir/out.mp4"
 
-  # Tier 1: 60fps interpolation + baked seam crossfade.
-  if ffmpeg -y -hide_banner -timelimit "$TRANSCODE_TIME" -loglevel error -i "$src" -filter_complex "
+  # Tier 1: 60fps interpolation + baked seam crossfade. The encode runs under a
+  # hard RLIMIT_FSIZE (hostile input can never fill disk before rejection) and a
+  # wall-clock timeout (-timelimit is CPU-time only and bounds neither a stalled
+  # encode nor an I/O wait).
+  if ( ulimit -f "$MAX_OUTPUT_BLOCKS" 2>/dev/null; \
+       timeout --kill-after=5 "$TRANSCODE_TIME" ffmpeg -y -hide_banner -timelimit "$TRANSCODE_TIME" -loglevel error -i "$src" -filter_complex "
 [0:v]framerate=fps=${FPS}[m];
 [m]split=3[a][b][c];
 [a]trim=duration=${X},setpts=PTS-STARTPTS[head];
@@ -89,7 +96,7 @@ transcode() {
 [c]trim=start=${mid_end},setpts=PTS-STARTPTS[tail];
 [tail][head]xfade=transition=fade:duration=${X}:offset=0[xf];
 [mid][xf]concat=n=2:v=1:a=0[out]
-" -map "[out]" -c:v libx264 -preset medium -crf "$CRF" -g "$GOP" -keyint_min "$GOP" -sc_threshold 0 -an -movflags +faststart "$staged"; then
+" -map "[out]" -c:v libx264 -preset medium -crf "$CRF" -g "$GOP" -keyint_min "$GOP" -sc_threshold 0 -an -movflags +faststart "$staged" ); then
     if install_staged "$staged" "$out" "$tmpdir"; then
       return 0
     fi
@@ -98,8 +105,9 @@ transcode() {
   # Tier 2 (xfade unavailable/errored): 60fps only; the loop seam stays a cut.
   err "seam crossfade failed for $src — falling back to interpolation only"
   rm -f "$staged"
-  if ffmpeg -y -hide_banner -timelimit "$TRANSCODE_TIME" -loglevel error -i "$src" -vf "framerate=fps=${FPS}" \
-      -c:v libx264 -preset medium -crf "$CRF" -g "$GOP" -keyint_min "$GOP" -sc_threshold 0 -an -movflags +faststart "$staged"; then
+  if ( ulimit -f "$MAX_OUTPUT_BLOCKS" 2>/dev/null; \
+       timeout --kill-after=5 "$TRANSCODE_TIME" ffmpeg -y -hide_banner -timelimit "$TRANSCODE_TIME" -loglevel error -i "$src" -vf "framerate=fps=${FPS}" \
+         -c:v libx264 -preset medium -crf "$CRF" -g "$GOP" -keyint_min "$GOP" -sc_threshold 0 -an -movflags +faststart "$staged" ); then
     if install_staged "$staged" "$out" "$tmpdir"; then
       return 0
     fi

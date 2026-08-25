@@ -61,6 +61,10 @@ if (( out_bytes > HARD_OUT_CAP_BYTES )); then
   out_bytes="${HARD_OUT_CAP_BYTES}"
 fi
 MAX_OUTPUT_BYTES="${out_bytes}"
+# Hard file-size bound for the encode, applied via ulimit so ffmpeg cannot
+# write beyond the ceiling while it runs (RLIMIT_FSIZE units are 512-byte
+# blocks). The post-encode `stat` check below stays as belt-and-braces.
+MAX_OUTPUT_BLOCKS=$(( (MAX_OUTPUT_BYTES + 1023) / 1024 ))
 
 # Deadlines so a stalled transfer or encode cannot hang forever.
 MAX_TIME="${OMALIVE_MAX_TIME:-3600}"               # curl transfer deadline (s)
@@ -144,9 +148,13 @@ for entry in "${MANIFEST[@]}"; do
 
   installed=0
   if [ "$CODEC" = "transcode" ]; then
-    if ffmpeg -y -nostdin -timelimit "$TRANSCODE_TIME" -loglevel error -i "$stage_webm" \
-       -c:v libx264 -preset medium -crf 23 -pix_fmt yuv420p \
-       -c:a aac -b:a 128k -movflags +faststart "$stage_mp4" >/dev/null 2>&1; then
+    # The encode runs under a hard RLIMIT_FSIZE (so hostile input can never
+    # fill disk before rejection) and a wall-clock timeout (ffmpeg -timelimit
+    # is CPU-time only and would not bound a stalled encode or I/O wait).
+    if ( ulimit -f "$MAX_OUTPUT_BLOCKS" 2>/dev/null; \
+         timeout --kill-after=5 "$TRANSCODE_TIME" ffmpeg -y -nostdin -timelimit "$TRANSCODE_TIME" -loglevel error -i "$stage_webm" \
+           -c:v libx264 -preset medium -crf 23 -pix_fmt yuv420p \
+           -c:a aac -b:a 128k -movflags +faststart "$stage_mp4" ) >/dev/null 2>&1; then
       if [ -f "$stage_mp4" ] && [ ! -L "$stage_mp4" ] &&
          [ "$(stat -c %s "$stage_mp4" 2>/dev/null || echo 0)" -le "$MAX_OUTPUT_BYTES" ]; then
         mv -f "$stage_mp4" "$out_mp4"
@@ -156,7 +164,7 @@ for entry in "${MANIFEST[@]}"; do
         err "refusing out-of-range or non-regular transcode output for $name (over ${MAX_OUTPUT_BYTES} bytes) — keeping webm"
       fi
     else
-      err "ffmpeg transcoding failed for $name (deadline ${TRANSCODE_TIME}s) — keeping webm"
+      err "ffmpeg transcoding failed for $name (deadline ${TRANSCODE_TIME}s or output over the file-size bound) — keeping webm"
     fi
   fi
   if [ "$installed" -eq 0 ]; then
