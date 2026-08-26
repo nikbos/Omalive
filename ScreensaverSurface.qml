@@ -92,9 +92,18 @@ PanelWindow {
         if (typeof cb !== "function" || surface.width <= 0 || surface.height <= 0)
             return ;
 
+        // Cap the grab resolution so the PNG is small and loads instantly on
+        // the lock screen (a full-res frame is ~6MB and would flash the dark
+        // background while it loads).
+        var w = surface.width, h = surface.height, m = Math.max(w, h);
+        if (m > 1024) {
+            var s = 1024 / m;
+            w = Math.round(w * s);
+            h = Math.round(h * s);
+        }
         var grab = out.grabToImage(function(result) {
             cb(result && result.saveToFile(path) ? path : "");
-        }, Qt.size(surface.width, surface.height));
+        }, Qt.size(w, h));
         if (!grab)
             cb("");
     }

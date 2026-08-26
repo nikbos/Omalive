@@ -1277,7 +1277,7 @@ Item {
     // continuation instead of a cold seek. Each surface is seeded to where the
     // lock starts; the small drift between the two decoders is corrected on
     // unlock via applyLockHandoff.
-    function startWallpaperFollow(txt) {
+    function startWallpaperFollow(txt, play) {
         var t = String(txt || "").trim();
         if (!t || t.length > root.maxStateBytes)
             return "bad-payload";
@@ -1301,15 +1301,22 @@ Item {
 
         root.screenPositions = positions;
         root.wallpaperFollowingLock = true;
-        root.wallpaperFrozen = false;
         root.wallpaperVisible = true;
         root.manualPaused = false;
         root.stopFlourish();
         root.stopDecel();
-        var i = 0, ws = root.wallpaperSurfaces;
-        for (; i < ws.length; i++) {
-            ws[i].setRate(1);
-            ws[i].playFrom(root.frozenPositionFor(ws[i].monName));
+        // `play === false` only arms the follow (used at beginLock): the
+        // wallpaper stays frozen/drifting so locking doesn't visibly snap it to
+        // 1x during the ~2s before the session-lock surface maps. The lock
+        // service re-calls this with play=true the moment the lock video
+        // actually starts (realignWallpaper), seeding both decoders in lockstep.
+        if (play !== false) {
+            root.wallpaperFrozen = false;
+            var i = 0, ws = root.wallpaperSurfaces;
+            for (; i < ws.length; i++) {
+                ws[i].setRate(1);
+                ws[i].playFrom(root.frozenPositionFor(ws[i].monName));
+            }
         }
         // The lock is engaging and will cover every surface; the screensaver
         // overlay must yield NOW (not on the 3s lock poll) so a fast
